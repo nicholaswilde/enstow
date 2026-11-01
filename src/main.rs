@@ -22,8 +22,19 @@ fn main() -> anyhow::Result<()> {
                 args.force,
             )?;
         }
+        Some(Commands::Restow(args)) => {
+            let unstow_actions = stow::plan_unstow(&args)?;
+            stow::execute_unstow_plan(&unstow_actions, &args.target, args.dry_run)?;
+            let apply_actions = stow::plan_stow(&args)?;
+            stow::execute_plan(
+                &apply_actions,
+                args.dry_run,
+                args.age_key_file.as_deref(),
+                args.force,
+            )?;
+        }
         Some(Commands::Unstow(args)) => {
-            let actions = stow::plan_stow(&args)?;
+            let actions = stow::plan_unstow(&args)?;
             stow::execute_unstow_plan(&actions, &args.target, args.dry_run)?;
         }
         Some(Commands::Status { common, json }) => {

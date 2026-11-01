@@ -166,6 +166,123 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     Ok(actions)
 }
 
+pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
+    let mut actions = plan_stow(args)?;
+
+    let source_root = args.source.canonicalize().map_err(|e| EnstowError::Io {
+        path: args.source.clone(),
+        source: e,
+    })?;
+
+    let pkg_roots = if args.packages.is_empty() {
+        vec![source_root]
+    } else {
+        let mut roots = Vec::new();
+        for pkg in &args.packages {
+            let pkg_path = source_root.join(pkg);
+            let canonical = pkg_path.canonicalize().map_err(|e| EnstowError::Io {
+                path: pkg_path.clone(),
+                source: e,
+            })?;
+            roots.push(canonical);
+        }
+        roots
+    };
+
+    let target_canonical = args
+        .target
+        .canonicalize()
+        .unwrap_or_else(|_| args.target.to_path_buf());
+
+    if target_canonical.is_dir() {
+        for entry in WalkDir::new(&target_canonical)
+            .max_depth(5)
+            .into_iter()
+            .filter_entry(|e| {
+                let name = e.file_name().to_str().unwrap_or_default();
+                if e.file_type().is_dir() {
+                    !is_stale_scan_ignored_dir(name)
+                } else {
+                    true
+                }
+            })
+        {
+            let Ok(entry) = entry else {
+                continue;
+            };
+
+            if entry.path_is_symlink() {
+                let symlink_path = entry.path();
+                if let Ok(dest) = std::fs::read_link(symlink_path) {
+                    let full_dest = if dest.is_relative() {
+                        match symlink_path.parent() {
+                            Some(parent) => parent.join(&dest),
+                            None => dest,
+                        }
+                    } else {
+                        dest
+                    };
+
+                    let norm_dest = normalize_path(&full_dest);
+                    let belongs_to_pkg = pkg_roots.iter().any(|pkg_root| {
+                        norm_dest.starts_with(pkg_root)
+                            || full_dest
+                                .canonicalize()
+                                .map(|c| c.starts_with(pkg_root))
+                                .unwrap_or(false)
+                    });
+
+                    if belongs_to_pkg {
+                        let already_active = actions.iter().any(|a| {
+                            let t = a.target();
+                            t == symlink_path
+                                || normalize_path(t) == normalize_path(symlink_path)
+                                || t.canonicalize().ok() == symlink_path.canonicalize().ok()
+                        });
+
+                        if !already_active {
+                            actions.push(FileAction::Symlink {
+                                source: full_dest,
+                                target: symlink_path.to_path_buf(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(actions)
+}
+
+fn is_stale_scan_ignored_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".cargo"
+            | ".rustup"
+            | ".cache"
+            | "node_modules"
+            | "target"
+            | ".npm"
+            | ".gradle"
+            | ".gemini"
+            | ".pub-cache"
+            | ".platformio"
+            | ".password-store"
+            | ".password-store-backup"
+            | ".gvm"
+            | ".bun"
+            | ".tesseract-rs"
+            | ".serena"
+            | ".codegraph"
+            | ".agents"
+            | ".github"
+            | "git"
+            | "go"
+    )
+}
+
 pub fn execute_plan(
     actions: &[FileAction],
     dry_run: bool,
@@ -344,6 +461,21 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     false
 }
 
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    out
+}
+
 pub fn is_symlink_to(target: &Path, expected_source: &Path) -> bool {
     if let Ok(meta) = std::fs::symlink_metadata(target) {
         if meta.file_type().is_symlink() {
@@ -359,6 +491,12 @@ pub fn is_symlink_to(target: &Path, expected_source: &Path) -> bool {
                 } else {
                     dest
                 };
+                if full_dest == expected_source {
+                    return true;
+                }
+                if normalize_path(&full_dest) == normalize_path(expected_source) {
+                    return true;
+                }
                 if let (Ok(c1), Ok(c2)) = (full_dest.canonicalize(), expected_source.canonicalize())
                 {
                     return c1 == c2;
