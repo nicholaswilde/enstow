@@ -377,20 +377,20 @@ pub fn edit_file_age(
         });
 
     let status = {
-        #[cfg(windows)]
-        {
-            Command::new("cmd")
-                .arg("/C")
-                .arg(format!("{} \"{}\"", editor, temp_path.display()))
+        let editor_path = Path::new(&editor);
+        if editor_path.is_file() {
+            Command::new(editor_path)
+                .arg(&temp_path)
                 .status()
                 .map_err(|e| EnstowError::Config(format!("Failed to run editor '{editor}': {e}")))?
-        }
-        #[cfg(not(windows))]
-        {
-            Command::new("sh")
-                .arg("-c")
-                .arg(format!("{} \"$1\"", editor))
-                .arg("--")
+        } else {
+            let mut parts = editor.split_whitespace();
+            let prog = parts
+                .next()
+                .unwrap_or(if cfg!(windows) { "notepad" } else { "vi" });
+            let args: Vec<&str> = parts.collect();
+            Command::new(prog)
+                .args(&args)
                 .arg(&temp_path)
                 .status()
                 .map_err(|e| EnstowError::Config(format!("Failed to run editor '{editor}': {e}")))?
