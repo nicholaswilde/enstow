@@ -28,6 +28,7 @@ fn test_enstowignore_filters_configured_patterns() {
         dry_run: true,
         force: false,
         age_key_file: None,
+        packages: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -58,6 +59,7 @@ fn test_stow_local_ignore_fallback() {
         dry_run: true,
         force: false,
         age_key_file: None,
+        packages: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();

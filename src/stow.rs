@@ -79,56 +79,87 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
         source: e,
     })?;
 
-    let ignore_patterns = load_ignore_patterns(&source_root);
+    let root_ignore_patterns = load_ignore_patterns(&source_root);
+
+    let pkg_roots = if args.packages.is_empty() {
+        vec![source_root.clone()]
+    } else {
+        let mut roots = Vec::new();
+        for pkg in &args.packages {
+            let pkg_path = source_root.join(pkg);
+            let canonical = pkg_path.canonicalize().map_err(|e| EnstowError::Io {
+                path: pkg_path.clone(),
+                source: e,
+            })?;
+            if !canonical.is_dir() {
+                return Err(EnstowError::Config(format!(
+                    "Package '{}' is not a directory: {}",
+                    pkg,
+                    pkg_path.display()
+                )));
+            }
+            roots.push(canonical);
+        }
+        roots
+    };
 
     let mut actions = Vec::new();
 
-    for entry in WalkDir::new(&source_root)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or_default(), &ignore_patterns))
-    {
-        let entry = entry.map_err(|e| EnstowError::Io {
-            path: e.path().unwrap_or(&source_root).to_path_buf(),
-            source: std::io::Error::other(e.to_string()),
-        })?;
-
-        let path = entry.path();
-        if path.is_dir() {
-            continue;
+    for pkg_root in pkg_roots {
+        let mut ignore_patterns = root_ignore_patterns.clone();
+        if pkg_root != source_root {
+            ignore_patterns.extend(load_ignore_patterns(&pkg_root));
         }
 
-        let rel_path = path.strip_prefix(&source_root).map_err(|_| {
-            EnstowError::Config(format!(
-                "Failed to compute relative path for {}",
-                path.display()
-            ))
-        })?;
+        for entry in WalkDir::new(&pkg_root)
+            .min_depth(1)
+            .into_iter()
+            .filter_entry(|e| {
+                !is_ignored(e.file_name().to_str().unwrap_or_default(), &ignore_patterns)
+            })
+        {
+            let entry = entry.map_err(|e| EnstowError::Io {
+                path: e.path().unwrap_or(&pkg_root).to_path_buf(),
+                source: std::io::Error::other(e.to_string()),
+            })?;
 
-        if let Some(_secret_type) = detect_secret_type(path) {
-            let file_name = target_plaintext_name(path).unwrap_or_else(|| {
-                rel_path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
+            let path = entry.path();
+            if path.is_dir() {
+                continue;
+            }
 
-            let target_rel = if let Some(parent) = rel_path.parent() {
-                parent.join(file_name)
+            let rel_path = path.strip_prefix(&pkg_root).map_err(|_| {
+                EnstowError::Config(format!(
+                    "Failed to compute relative path for {}",
+                    path.display()
+                ))
+            })?;
+
+            if let Some(_secret_type) = detect_secret_type(path) {
+                let file_name = target_plaintext_name(path).unwrap_or_else(|| {
+                    rel_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                });
+
+                let target_rel = if let Some(parent) = rel_path.parent() {
+                    parent.join(file_name)
+                } else {
+                    PathBuf::from(file_name)
+                };
+
+                actions.push(FileAction::Decrypt {
+                    source: path.to_path_buf(),
+                    target: args.target.join(target_rel),
+                });
             } else {
-                PathBuf::from(file_name)
-            };
-
-            actions.push(FileAction::Decrypt {
-                source: path.to_path_buf(),
-                target: args.target.join(target_rel),
-            });
-        } else {
-            actions.push(FileAction::Symlink {
-                source: path.to_path_buf(),
-                target: args.target.join(rel_path),
-            });
+                actions.push(FileAction::Symlink {
+                    source: path.to_path_buf(),
+                    target: args.target.join(rel_path),
+                });
+            }
         }
     }
 
@@ -409,6 +440,7 @@ mod tests {
             dry_run: true,
             force: false,
             age_key_file: None,
+            packages: Vec::new(),
         };
 
         let actions = plan_stow(&args).unwrap();

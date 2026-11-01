@@ -37,6 +37,23 @@ pub struct CommonArgs {
     /// Explicit path to age identity key file
     #[arg(long, env = "SOPS_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,
+
+    /// Dotfile packages to stow or unstow
+    #[arg(value_name = "PACKAGES")]
+    pub packages: Vec<String>,
+}
+
+impl Default for CommonArgs {
+    fn default() -> Self {
+        Self {
+            source: PathBuf::from("."),
+            target: default_target_dir(),
+            dry_run: false,
+            force: false,
+            age_key_file: None,
+            packages: Vec::new(),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

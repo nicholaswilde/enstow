@@ -39,6 +39,7 @@ fn test_status_classification() {
         dry_run: false,
         force: false,
         age_key_file: None,
+        packages: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();

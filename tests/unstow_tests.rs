@@ -46,6 +46,7 @@ fn test_unstow_removes_matching_symlinks_and_decrypted_secrets() {
         dry_run: false,
         force: false,
         age_key_file: None,
+        packages: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -97,6 +98,7 @@ fn test_unstow_cleans_empty_parent_directories() {
         dry_run: false,
         force: false,
         age_key_file: None,
+        packages: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();

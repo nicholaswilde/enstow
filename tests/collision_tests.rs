@@ -25,6 +25,7 @@ fn test_skip_existing_identical_symlink() {
         dry_run: false,
         age_key_file: None,
         force: false,
+        packages: Vec::new(),
     };
 
     let actions = plan_stow(&args).unwrap();
