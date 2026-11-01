@@ -315,33 +315,46 @@ pub fn edit_file_age(
 
     let plaintext = decrypt_age(file, age_key_file)?;
 
-    let target_name = target_plaintext_name(file).unwrap_or_else(|| "secret".into());
-    let mut temp_file = tempfile::Builder::new()
+    let temp_dir = tempfile::Builder::new()
         .prefix(".enstow-edit-")
-        .suffix(&format!("-{target_name}"))
-        .tempfile()
+        .tempdir()
         .map_err(|e| EnstowError::Io {
-            path: PathBuf::from("tempfile"),
+            path: PathBuf::from("tempdir"),
             source: e,
         })?;
+
+    let target_name = target_plaintext_name(file).unwrap_or_else(|| "secret".into());
+    let temp_path = temp_dir.path().join(&target_name);
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(temp_file.path(), std::fs::Permissions::from_mode(0o600));
-    }
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
 
-    use std::io::Write;
-    temp_file
-        .write_all(&plaintext)
-        .map_err(|e| EnstowError::Io {
-            path: temp_file.path().to_path_buf(),
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp_path)
+            .map_err(|e| EnstowError::Io {
+                path: temp_path.clone(),
+                source: e,
+            })?;
+        f.write_all(&plaintext).map_err(|e| EnstowError::Io {
+            path: temp_path.clone(),
             source: e,
         })?;
-    temp_file.flush().map_err(|e| EnstowError::Io {
-        path: temp_file.path().to_path_buf(),
-        source: e,
-    })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&temp_path, &plaintext).map_err(|e| EnstowError::Io {
+            path: temp_path.clone(),
+            source: e,
+        })?;
+    }
 
     let editor = editor_override
         .map(String::from)
@@ -363,7 +376,6 @@ pub fn edit_file_age(
             }
         });
 
-    let temp_path = temp_file.path().to_path_buf();
     let status = {
         #[cfg(windows)]
         {
