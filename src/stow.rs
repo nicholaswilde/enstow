@@ -102,12 +102,15 @@ pub fn check_status(
 }
 
 pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
-    let source_root = args.source.canonicalize().map_err(|e| EnstowError::Io {
-        path: args.source.clone(),
+    let source_path = args.source_path();
+    let target_path = args.target_path();
+    let source_root = source_path.canonicalize().map_err(|e| EnstowError::Io {
+        path: source_path.to_path_buf(),
         source: e,
     })?;
 
-    let root_ignore_patterns = load_ignore_patterns(&source_root);
+    let mut root_ignore_patterns = load_ignore_patterns(&source_root);
+    root_ignore_patterns.extend(args.ignore.clone());
 
     let pkg_roots = if args.packages.is_empty() {
         vec![source_root.clone()]
@@ -180,12 +183,12 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
 
                 actions.push(FileAction::Decrypt {
                     source: path.to_path_buf(),
-                    target: args.target.join(target_rel),
+                    target: target_path.join(target_rel),
                 });
             } else {
                 actions.push(FileAction::Symlink {
                     source: path.to_path_buf(),
-                    target: args.target.join(rel_path),
+                    target: target_path.join(rel_path),
                 });
             }
         }
@@ -197,8 +200,10 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
 pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let mut actions = plan_stow(args)?;
 
-    let source_root = args.source.canonicalize().map_err(|e| EnstowError::Io {
-        path: args.source.clone(),
+    let source_path = args.source_path();
+    let target_path = args.target_path();
+    let source_root = source_path.canonicalize().map_err(|e| EnstowError::Io {
+        path: source_path.to_path_buf(),
         source: e,
     })?;
 
@@ -217,10 +222,9 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
         roots
     };
 
-    let target_canonical = args
-        .target
+    let target_canonical = target_path
         .canonicalize()
-        .unwrap_or_else(|_| args.target.to_path_buf());
+        .unwrap_or_else(|_| target_path.clone());
 
     if target_canonical.is_dir() {
         for entry in WalkDir::new(&target_canonical)
@@ -618,12 +622,13 @@ mod tests {
 
         let target_dir = tempdir().unwrap();
         let args = CommonArgs {
-            source: dir.path().to_path_buf(),
-            target: target_dir.path().to_path_buf(),
+            source: Some(dir.path().to_path_buf()),
+            target: Some(target_dir.path().to_path_buf()),
             dry_run: true,
             force: false,
             age_key_file: None,
             packages: Vec::new(),
+            ignore: Vec::new(),
         };
 
         let actions = plan_stow(&args).unwrap();

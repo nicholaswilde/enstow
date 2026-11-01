@@ -54,12 +54,13 @@ fn test_status_classification() {
     fs::write(&secret_tgt, "decrypted").unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -113,12 +114,13 @@ fn test_secret_status_drift_detection_and_missing_keys() {
 
     // 3. Plan stow
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();

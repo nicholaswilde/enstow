@@ -41,12 +41,13 @@ fn test_unstow_removes_matching_symlinks_and_decrypted_secrets() {
     fs::write(&unrelated_file, "do not touch").unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -93,12 +94,13 @@ fn test_unstow_cleans_empty_parent_directories() {
     std::os::windows::fs::symlink_file(&file, &target_file).unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();

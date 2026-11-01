@@ -20,12 +20,13 @@ fn test_skip_existing_identical_symlink() {
     std::os::windows::fs::symlink_file(&file, &target_link).unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         age_key_file: None,
         force: false,
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     let actions = plan_stow(&args).unwrap();

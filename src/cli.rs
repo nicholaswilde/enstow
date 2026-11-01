@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -9,6 +9,10 @@ use std::path::PathBuf;
     about = "Secret-aware dotfile manager combining stow symlinking with sops/age decryption"
 )]
 pub struct Cli {
+    /// Path to configuration file (TOML, YAML, or JSON)
+    #[arg(short = 'C', long, global = true, env = "ENSTOW_CONFIG")]
+    pub config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 
@@ -16,15 +20,15 @@ pub struct Cli {
     pub common: CommonArgs,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommonArgs {
     /// Source directory containing dotfiles
-    #[arg(short, long, default_value = ".")]
-    pub source: PathBuf,
+    #[arg(short, long)]
+    pub source: Option<PathBuf>,
 
     /// Target directory to apply dotfiles
-    #[arg(short, long, default_value_os_t = default_target_dir())]
-    pub target: PathBuf,
+    #[arg(short, long)]
+    pub target: Option<PathBuf>,
 
     /// Preview actions without writing changes to disk
     #[arg(short = 'n', long)]
@@ -41,18 +45,19 @@ pub struct CommonArgs {
     /// Dotfile packages to stow or unstow
     #[arg(value_name = "PACKAGES")]
     pub packages: Vec<String>,
+
+    /// Additional ignore patterns from config
+    #[arg(skip)]
+    pub ignore: Vec<String>,
 }
 
-impl Default for CommonArgs {
-    fn default() -> Self {
-        Self {
-            source: PathBuf::from("."),
-            target: default_target_dir(),
-            dry_run: false,
-            force: false,
-            age_key_file: None,
-            packages: Vec::new(),
-        }
+impl CommonArgs {
+    pub fn source_path(&self) -> &Path {
+        self.source.as_deref().unwrap_or_else(|| Path::new("."))
+    }
+
+    pub fn target_path(&self) -> PathBuf {
+        self.target.clone().unwrap_or_else(default_target_dir)
     }
 }
 
@@ -109,7 +114,7 @@ pub enum Commands {
     },
 }
 
-fn default_target_dir() -> PathBuf {
+pub fn default_target_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))

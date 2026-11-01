@@ -1,0 +1,34 @@
+# enstow example configuration file
+# Default location: $XDG_CONFIG_HOME/enstow/config.toml (or ~/.config/enstow/config.toml)
+# Formats supported: TOML (.toml), YAML (.yaml, .yml), JSON (.json)
+
+# Default source directory containing dotfile packages (defaults to ".")
+# source = "~/dotfiles"
+
+# Default target directory where dotfiles are deployed (defaults to $HOME)
+# target = "~"
+
+# Path to age identity key file for secret decryption and encryption
+# age_key_file = "~/.config/sops/age/keys.txt"
+
+# Default age recipient public keys (single string or list of strings)
+# recipients = [
+#     "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+# ]
+
+# Default list of packages to manage if none are specified on the CLI
+# packages = [
+#     "zsh",
+#     "nvim",
+#     "git",
+# ]
+
+# Preferred editor for `enstow edit` (defaults to $VISUAL, $EDITOR, or "nano")
+# editor = "nvim"
+
+# Additional ignore patterns (matched via glob against relative paths)
+# ignore = [
+#     "*.tmp",
+#     ".DS_Store",
+#     "*.swp",
+# ]

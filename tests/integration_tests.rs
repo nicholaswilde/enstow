@@ -41,12 +41,13 @@ fn test_end_to_end_nested_stow_with_mixed_regular_and_age_files() {
     fs::write(&hosts_age, encrypted_buf).unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     // 3. Plan stow

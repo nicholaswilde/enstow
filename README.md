@@ -117,6 +117,19 @@ enstow edit secret.env.age --age-key-file ~/.config/sops/age/keys.txt
 enstow edit secret.env.age --editor "nano"
 ```
 
+### Configuration File
+
+`enstow` supports configuration files in TOML, YAML, or JSON. By default, it looks for `$XDG_CONFIG_HOME/enstow/config.{toml,yaml,yml,json}` (fallback `~/.config/enstow/...`). Pass `--config <path>` / `-C <path>` or set `ENSTOW_CONFIG` to override.
+
+See [assets/config.example.toml](assets/config.example.toml) for an example template.
+
+**Precedence Order:**
+
+1. CLI Arguments (`--source`, `--target`, `--age-key-file`, `--recipient`, `--editor`)
+2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `SOPS_AGE_KEY_FILE`, `SOPS_AGE_RECIPIENTS`, `EDITOR`)
+3. Configuration File (`config.{toml,yaml,json}`)
+4. Built-in Defaults
+
 ---
 
 ## :test_tube: Development & Quality Gates

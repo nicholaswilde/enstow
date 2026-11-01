@@ -11,35 +11,44 @@ fn main() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber).ok();
 
     let cli = Cli::parse();
+    let config = enstow::config::load_config(cli.config.as_deref())?.map(|(_, cfg)| cfg);
 
     match cli.command {
         Some(Commands::Apply(args)) => {
-            let actions = stow::plan_stow(&args)?;
+            let common =
+                enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+            let actions = stow::plan_stow(&common)?;
             stow::execute_plan(
                 &actions,
-                args.dry_run,
-                args.age_key_file.as_deref(),
-                args.force,
+                common.dry_run,
+                common.age_key_file.as_deref(),
+                common.force,
             )?;
         }
         Some(Commands::Restow(args)) => {
-            let unstow_actions = stow::plan_unstow(&args)?;
-            stow::execute_unstow_plan(&unstow_actions, &args.target, args.dry_run)?;
-            let apply_actions = stow::plan_stow(&args)?;
+            let common =
+                enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+            let unstow_actions = stow::plan_unstow(&common)?;
+            stow::execute_unstow_plan(&unstow_actions, &common.target_path(), common.dry_run)?;
+            let apply_actions = stow::plan_stow(&common)?;
             stow::execute_plan(
                 &apply_actions,
-                args.dry_run,
-                args.age_key_file.as_deref(),
-                args.force,
+                common.dry_run,
+                common.age_key_file.as_deref(),
+                common.force,
             )?;
         }
         Some(Commands::Unstow(args)) => {
-            let actions = stow::plan_unstow(&args)?;
-            stow::execute_unstow_plan(&actions, &args.target, args.dry_run)?;
+            let common =
+                enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+            let actions = stow::plan_unstow(&common)?;
+            stow::execute_unstow_plan(&actions, &common.target_path(), common.dry_run)?;
         }
         Some(Commands::Status { common, json }) => {
-            let actions = stow::plan_stow(&common)?;
-            let statuses = stow::check_status(&actions, common.age_key_file.as_deref())?;
+            let resolved_common =
+                enstow::config::resolve_common_args(&common, config.as_ref()).to_common_args();
+            let actions = stow::plan_stow(&resolved_common)?;
+            let statuses = stow::check_status(&actions, resolved_common.age_key_file.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&statuses)?);
             } else {
@@ -66,12 +75,21 @@ fn main() -> anyhow::Result<()> {
             recipient,
             age_key_file,
         }) => {
+            let resolved_recipients =
+                enstow::config::resolve_recipients(&recipient, config.as_ref());
+            let resolved_key_file =
+                enstow::config::resolve_age_key_file(age_key_file.as_deref(), config.as_ref());
             let out = output.unwrap_or_else(|| {
                 let mut p = file.as_os_str().to_os_string();
                 p.push(".age");
                 std::path::PathBuf::from(p)
             });
-            enstow::crypto::encrypt_file_age(&file, &out, &recipient, age_key_file.as_deref())?;
+            enstow::crypto::encrypt_file_age(
+                &file,
+                &out,
+                &resolved_recipients,
+                resolved_key_file.as_deref(),
+            )?;
             println!("Encrypted {} -> {}", file.display(), out.display());
         }
         Some(Commands::Edit {
@@ -80,11 +98,17 @@ fn main() -> anyhow::Result<()> {
             age_key_file,
             editor,
         }) => {
+            let resolved_recipients =
+                enstow::config::resolve_recipients(&recipient, config.as_ref());
+            let resolved_key_file =
+                enstow::config::resolve_age_key_file(age_key_file.as_deref(), config.as_ref());
+            let resolved_editor =
+                enstow::config::resolve_editor(editor.as_deref(), config.as_ref());
             let modified = enstow::crypto::edit_file_age(
                 &file,
-                &recipient,
-                age_key_file.as_deref(),
-                editor.as_deref(),
+                &resolved_recipients,
+                resolved_key_file.as_deref(),
+                resolved_editor.as_deref(),
             )?;
             if modified {
                 println!("Saved and re-encrypted {}", file.display());
@@ -94,12 +118,14 @@ fn main() -> anyhow::Result<()> {
         }
         None => {
             // Default to applying with root common args
-            let actions = stow::plan_stow(&cli.common)?;
+            let common =
+                enstow::config::resolve_common_args(&cli.common, config.as_ref()).to_common_args();
+            let actions = stow::plan_stow(&common)?;
             stow::execute_plan(
                 &actions,
-                cli.common.dry_run,
-                cli.common.age_key_file.as_deref(),
-                cli.common.force,
+                common.dry_run,
+                common.age_key_file.as_deref(),
+                common.force,
             )?;
         }
     }

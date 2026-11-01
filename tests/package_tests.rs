@@ -78,12 +78,13 @@ fn test_plan_stow_multiple_packages() {
     fs::write(&bashrc, "export BASH=1\n").unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["zsh".to_string(), "nvim".to_string()],
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -107,12 +108,13 @@ fn test_plan_stow_nonexistent_package_fails() {
     let target_dir = tempdir().unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["nonexistent".to_string()],
+        ignore: Vec::new(),
     };
 
     let result = plan_stow(&args);
@@ -158,12 +160,13 @@ fn test_multi_package_stow_unstow_status_integration() {
 
     // 1. Stow only zsh and secrets
     let args_apply = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: Some(key_file.clone()),
         packages: vec!["zsh".to_string(), "secrets".to_string()],
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args_apply).unwrap();
@@ -182,12 +185,13 @@ fn test_multi_package_stow_unstow_status_integration() {
 
     // 2. Status for zsh only
     let args_status_zsh = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["zsh".to_string()],
+        ignore: Vec::new(),
     };
     let plan_status = plan_stow(&args_status_zsh).unwrap();
     assert_eq!(plan_status.len(), 1);
@@ -197,12 +201,13 @@ fn test_multi_package_stow_unstow_status_integration() {
 
     // 3. Unstow zsh only
     let args_unstow_zsh = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["zsh".to_string()],
+        ignore: Vec::new(),
     };
     let plan_unstow = plan_stow(&args_unstow_zsh).unwrap();
     execute_unstow_plan(&plan_unstow, target_dir.path(), false).unwrap();

@@ -28,8 +28,14 @@ fn test_cli_parsing_restow() {
         Some(Commands::Restow(args)) => {
             assert!(args.dry_run);
             assert!(args.force);
-            assert_eq!(args.source, std::path::PathBuf::from("/custom/source"));
-            assert_eq!(args.target, std::path::PathBuf::from("/custom/target"));
+            assert_eq!(
+                args.source,
+                Some(std::path::PathBuf::from("/custom/source"))
+            );
+            assert_eq!(
+                args.target,
+                Some(std::path::PathBuf::from("/custom/target"))
+            );
             assert_eq!(args.packages, vec!["zsh", "nvim"]);
         }
         other => panic!("Expected Commands::Restow, got {:?}", other),
@@ -63,12 +69,13 @@ fn test_restow_prunes_removed_dotfile() {
     let target_file2 = target_dir.path().join("stale.txt");
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["my_pkg".to_string()],
+        ignore: Vec::new(),
     };
 
     // Initial stow
@@ -123,12 +130,13 @@ fn test_restow_prunes_removed_nested_directory() {
     let target_nested_dir = target_dir.path().join(".config").join("app").join("sub");
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["app".to_string()],
+        ignore: Vec::new(),
     };
 
     let initial_plan = plan_stow(&args).unwrap();
@@ -172,12 +180,13 @@ fn test_restow_dry_run_does_not_modify_disk() {
     let target_file2 = target_dir.path().join("file2.txt");
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: None,
         packages: vec!["app".to_string()],
+        ignore: Vec::new(),
     };
 
     let initial_plan = plan_stow(&args).unwrap();
@@ -229,12 +238,13 @@ fn test_restow_with_mixed_regular_and_age_files() {
     fs::write(&secret_age, encrypted_buf).unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
         age_key_file: Some(key_file.clone()),
         packages: vec!["mixed".to_string()],
+        ignore: Vec::new(),
     };
 
     // Initial stow

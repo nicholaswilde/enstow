@@ -23,12 +23,13 @@ fn test_enstowignore_filters_configured_patterns() {
     fs::write(&ignore_file, "*.bak\n# A comment\ntmp_*\n").unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: true,
         force: false,
         age_key_file: None,
         packages: Vec::new(),
+        ignore: Vec::new(),
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -54,12 +55,40 @@ fn test_stow_local_ignore_fallback() {
     fs::write(&ignore_file, "*.draft\n").unwrap();
 
     let args = CommonArgs {
-        source: source_dir.path().to_path_buf(),
-        target: target_dir.path().to_path_buf(),
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
         dry_run: true,
         force: false,
         age_key_file: None,
         packages: Vec::new(),
+        ignore: Vec::new(),
+    };
+
+    let plan = plan_stow(&args).unwrap();
+
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].target().file_name().unwrap(), "app.conf");
+}
+
+#[test]
+fn test_additional_ignore_patterns_from_args_or_config() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let app_conf = source_dir.path().join("app.conf");
+    fs::write(&app_conf, "normal config").unwrap();
+
+    let secret_log = source_dir.path().join("debug.log");
+    fs::write(&secret_log, "debug info").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        dry_run: true,
+        force: false,
+        age_key_file: None,
+        packages: Vec::new(),
+        ignore: vec!["*.log".to_string()],
     };
 
     let plan = plan_stow(&args).unwrap();
