@@ -74,6 +74,24 @@ fn main() -> anyhow::Result<()> {
             enstow::crypto::encrypt_file_age(&file, &out, &recipient, age_key_file.as_deref())?;
             println!("Encrypted {} -> {}", file.display(), out.display());
         }
+        Some(Commands::Edit {
+            file,
+            recipient,
+            age_key_file,
+            editor,
+        }) => {
+            let modified = enstow::crypto::edit_file_age(
+                &file,
+                &recipient,
+                age_key_file.as_deref(),
+                editor.as_deref(),
+            )?;
+            if modified {
+                println!("Saved and re-encrypted {}", file.display());
+            } else {
+                println!("No changes made to {}", file.display());
+            }
+        }
         None => {
             // Default to applying with root common args
             let actions = stow::plan_stow(&cli.common)?;

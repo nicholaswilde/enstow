@@ -81,6 +81,23 @@ pub enum Commands {
         #[arg(long, env = "SOPS_AGE_KEY_FILE")]
         age_key_file: Option<PathBuf>,
     },
+    /// Edit an age encrypted secret file interactively
+    Edit {
+        /// Encrypted age secret file to edit
+        file: PathBuf,
+
+        /// Recipient public key(s)
+        #[arg(short, long)]
+        recipient: Vec<String>,
+
+        /// Explicit path to age identity key file to resolve recipient public key
+        #[arg(long, env = "SOPS_AGE_KEY_FILE")]
+        age_key_file: Option<PathBuf>,
+
+        /// Custom editor command to use instead of $VISUAL or $EDITOR
+        #[arg(long)]
+        editor: Option<String>,
+    },
     /// Show status of dotfiles and symlinks
     Status {
         #[command(flatten)]

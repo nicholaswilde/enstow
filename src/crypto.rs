@@ -290,6 +290,135 @@ pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(),
     Ok(())
 }
 
+pub fn edit_file_age(
+    file: &Path,
+    recipients: &[String],
+    age_key_file: Option<&Path>,
+    editor_override: Option<&str>,
+) -> Result<bool, EnstowError> {
+    if !file.exists() {
+        return Err(EnstowError::Io {
+            path: file.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Secret file not found: {}", file.display()),
+            ),
+        });
+    }
+
+    if detect_secret_type(file) != Some(SecretType::Age) {
+        return Err(EnstowError::Config(format!(
+            "File is not an age encrypted secret: {}",
+            file.display()
+        )));
+    }
+
+    let plaintext = decrypt_age(file, age_key_file)?;
+
+    let target_name = target_plaintext_name(file).unwrap_or_else(|| "secret".into());
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".enstow-edit-")
+        .suffix(&format!("-{target_name}"))
+        .tempfile()
+        .map_err(|e| EnstowError::Io {
+            path: PathBuf::from("tempfile"),
+            source: e,
+        })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(temp_file.path(), std::fs::Permissions::from_mode(0o600));
+    }
+
+    use std::io::Write;
+    temp_file
+        .write_all(&plaintext)
+        .map_err(|e| EnstowError::Io {
+            path: temp_file.path().to_path_buf(),
+            source: e,
+        })?;
+    temp_file.flush().map_err(|e| EnstowError::Io {
+        path: temp_file.path().to_path_buf(),
+        source: e,
+    })?;
+
+    let editor = editor_override
+        .map(String::from)
+        .or_else(|| {
+            std::env::var("VISUAL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
+
+    let temp_path = temp_file.path().to_path_buf();
+    let status = {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .arg("/C")
+                .arg(format!("{} \"{}\"", editor, temp_path.display()))
+                .status()
+                .map_err(|e| EnstowError::Config(format!("Failed to run editor '{editor}': {e}")))?
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new("sh")
+                .arg("-c")
+                .arg(format!("{} \"$1\"", editor))
+                .arg("--")
+                .arg(&temp_path)
+                .status()
+                .map_err(|e| EnstowError::Config(format!("Failed to run editor '{editor}': {e}")))?
+        }
+    };
+
+    if !status.success() {
+        return Err(EnstowError::Config(format!(
+            "Editor '{editor}' exited with status: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "terminated by signal".into())
+        )));
+    }
+
+    let new_plaintext = std::fs::read(&temp_path).map_err(|e| EnstowError::Io {
+        path: temp_path.clone(),
+        source: e,
+    })?;
+
+    if new_plaintext == plaintext {
+        info!("No changes detected in secret file: {}", file.display());
+        return Ok(false);
+    }
+
+    let temp_out = file.with_extension("age.tmp");
+    encrypt_file_age(&temp_path, &temp_out, recipients, age_key_file)?;
+    if let Ok(meta) = std::fs::metadata(file) {
+        let _ = std::fs::set_permissions(&temp_out, meta.permissions());
+    }
+    std::fs::rename(&temp_out, file).map_err(|e| EnstowError::Io {
+        path: file.to_path_buf(),
+        source: e,
+    })?;
+
+    info!("Successfully re-encrypted secret file: {}", file.display());
+    Ok(true)
+}
+
 fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(explicit) = explicit_key {
