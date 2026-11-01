@@ -75,6 +75,7 @@ pub fn execute_plan(
     actions: &[FileAction],
     dry_run: bool,
     age_key_file: Option<&Path>,
+    force: bool,
 ) -> Result<(), EnstowError> {
     for action in actions {
         match action {
@@ -86,8 +87,7 @@ pub fn execute_plan(
                         source.display()
                     );
                 } else {
-                    info!("Linking {} -> {}", target.display(), source.display());
-                    create_symlink(source, target)?;
+                    create_symlink(source, target, force)?;
                 }
             }
             FileAction::Decrypt { source, target } => {
@@ -107,7 +107,7 @@ pub fn execute_plan(
                     })?;
                     let plaintext =
                         crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
-                    crate::crypto::write_secure_file(target, &plaintext)?;
+                    crate::crypto::write_secure_file(target, &plaintext, force)?;
                 }
             }
         }
@@ -129,13 +129,45 @@ fn is_ignored(name: &str) -> bool {
     )
 }
 
-fn create_symlink(source: &Path, target: &Path) -> Result<(), EnstowError> {
+fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), EnstowError> {
+    if let Ok(meta) = std::fs::symlink_metadata(target) {
+        if meta.file_type().is_symlink() {
+            if let Ok(destination) = std::fs::read_link(target) {
+                if destination == source {
+                    // Already links to the same source
+                    return Ok(());
+                }
+            }
+        }
+
+        if !force {
+            return Err(EnstowError::Collision {
+                path: target.to_path_buf(),
+            });
+        }
+
+        // Force overwrite: remove existing file, symlink, or directory
+        if meta.file_type().is_dir() {
+            std::fs::remove_dir_all(target).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+        } else {
+            std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+        }
+    }
+
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
             path: parent.to_path_buf(),
             source: e,
         })?;
     }
+
+    info!("Linking {} -> {}", target.display(), source.display());
 
     #[cfg(unix)]
     std::os::unix::fs::symlink(source, target).map_err(|e| EnstowError::Io {
@@ -170,6 +202,7 @@ mod tests {
             source: dir.path().to_path_buf(),
             target: target_dir.path().to_path_buf(),
             dry_run: true,
+            force: false,
             age_key_file: None,
         };
 

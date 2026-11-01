@@ -39,7 +39,7 @@ fn test_write_secure_file_permissions() {
     let secret_dest = dir.path().join("subdir/target_secret.txt");
     let content = b"confidential";
 
-    enstow::crypto::write_secure_file(&secret_dest, content).unwrap();
+    enstow::crypto::write_secure_file(&secret_dest, content, false).unwrap();
 
     let meta = fs::metadata(&secret_dest).unwrap();
     let mode = meta.permissions().mode() & 0o777;
@@ -75,7 +75,7 @@ fn test_execute_plan_decrypts_and_writes_secure_file() {
     }];
 
     // Run execute_plan with explicit key file
-    enstow::stow::execute_plan(&actions, false, Some(&key_file)).unwrap();
+    enstow::stow::execute_plan(&actions, false, Some(&key_file), false).unwrap();
 
     assert_eq!(fs::read(&target_dest).unwrap(), plaintext);
 

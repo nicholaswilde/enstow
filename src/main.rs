@@ -15,11 +15,16 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Apply(args)) => {
             let actions = stow::plan_stow(&args)?;
-            stow::execute_plan(&actions, args.dry_run, args.age_key_file.as_deref())?;
+            stow::execute_plan(
+                &actions,
+                args.dry_run,
+                args.age_key_file.as_deref(),
+                args.force,
+            )?;
         }
         Some(Commands::Status(args)) => {
             let actions = stow::plan_stow(&args)?;
-            stow::execute_plan(&actions, true, args.age_key_file.as_deref())?;
+            stow::execute_plan(&actions, true, args.age_key_file.as_deref(), args.force)?;
         }
         Some(Commands::Encrypt { file }) => {
             println!("Encrypting {}", file.display());
@@ -32,6 +37,7 @@ fn main() -> anyhow::Result<()> {
                 &actions,
                 cli.common.dry_run,
                 cli.common.age_key_file.as_deref(),
+                cli.common.force,
             )?;
         }
     }

@@ -30,6 +30,10 @@ pub struct CommonArgs {
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
+    /// Overwrite existing target files or differing symlinks
+    #[arg(short, long)]
+    pub force: bool,
+
     /// Explicit path to age identity key file
     #[arg(long, env = "SOPS_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,

@@ -14,6 +14,9 @@ pub enum EnstowError {
     #[error("Decryption failed for {path}: {message}")]
     Decryption { path: PathBuf, message: String },
 
+    #[error("Target path already exists (collision): {path}")]
+    Collision { path: PathBuf },
+
     #[error("Invalid path or configuration: {0}")]
     Config(String),
 }

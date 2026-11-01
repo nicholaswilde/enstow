@@ -133,7 +133,26 @@ pub fn decrypt_sops(path: &Path) -> Result<Vec<u8>, EnstowError> {
     Ok(output.stdout)
 }
 
-pub fn write_secure_file(path: &Path, content: &[u8]) -> Result<(), EnstowError> {
+pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(), EnstowError> {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if !force {
+            return Err(EnstowError::Collision {
+                path: path.to_path_buf(),
+            });
+        }
+        if meta.file_type().is_dir() {
+            std::fs::remove_dir_all(path).map_err(|e| EnstowError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+        } else {
+            std::fs::remove_file(path).map_err(|e| EnstowError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+        }
+    }
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
             path: parent.to_path_buf(),
