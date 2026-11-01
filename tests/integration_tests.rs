@@ -12,7 +12,7 @@ fn test_end_to_end_nested_stow_with_mixed_regular_and_age_files() {
     let target_dir = tempdir().unwrap();
 
     // 1. Setup nested regular dotfiles
-    let bash_dir = source_dir.path().join(".config/bash");
+    let bash_dir = source_dir.path().join(".config").join("bash");
     fs::create_dir_all(&bash_dir).unwrap();
     let bashrc = bash_dir.join("bashrc");
     fs::write(&bashrc, "export FOO=bar\n").unwrap();
@@ -21,7 +21,7 @@ fn test_end_to_end_nested_stow_with_mixed_regular_and_age_files() {
     fs::write(&root_file, "# profile\n").unwrap();
 
     // 2. Setup age encrypted secret inside nested dir
-    let auth_dir = source_dir.path().join(".config/gh");
+    let auth_dir = source_dir.path().join(".config").join("gh");
     fs::create_dir_all(&auth_dir).unwrap();
     let hosts_age = auth_dir.join("hosts.yml.age");
 
@@ -54,30 +54,56 @@ fn test_end_to_end_nested_stow_with_mixed_regular_and_age_files() {
 
     // 4. Dry run verification: ensure no target files exist
     execute_plan(&plan, true, Some(&key_file), false).unwrap();
-    assert!(!target_dir.path().join(".config/bash/bashrc").exists());
+    assert!(!target_dir
+        .path()
+        .join(".config")
+        .join("bash")
+        .join("bashrc")
+        .exists());
     assert!(!target_dir.path().join(".profile").exists());
-    assert!(!target_dir.path().join(".config/gh/hosts.yml").exists());
+    assert!(!target_dir
+        .path()
+        .join(".config")
+        .join("gh")
+        .join("hosts.yml")
+        .exists());
 
     // 5. Real execution
     execute_plan(&plan, false, Some(&key_file), false).unwrap();
 
     // 6. Verify regular symlinks
-    let target_bashrc = target_dir.path().join(".config/bash/bashrc");
+    let target_bashrc = target_dir
+        .path()
+        .join(".config")
+        .join("bash")
+        .join("bashrc");
     assert!(fs::symlink_metadata(&target_bashrc)
         .unwrap()
         .file_type()
         .is_symlink());
-    assert_eq!(fs::read_link(&target_bashrc).unwrap(), bashrc);
+    assert!(enstow::stow::is_symlink_to(&target_bashrc, &bashrc));
+    assert_eq!(
+        fs::canonicalize(fs::read_link(&target_bashrc).unwrap()).unwrap(),
+        fs::canonicalize(&bashrc).unwrap()
+    );
 
     let target_profile = target_dir.path().join(".profile");
     assert!(fs::symlink_metadata(&target_profile)
         .unwrap()
         .file_type()
         .is_symlink());
-    assert_eq!(fs::read_link(&target_profile).unwrap(), root_file);
+    assert!(enstow::stow::is_symlink_to(&target_profile, &root_file));
+    assert_eq!(
+        fs::canonicalize(fs::read_link(&target_profile).unwrap()).unwrap(),
+        fs::canonicalize(&root_file).unwrap()
+    );
 
     // 7. Verify decrypted file and Unix permissions
-    let target_hosts = target_dir.path().join(".config/gh/hosts.yml");
+    let target_hosts = target_dir
+        .path()
+        .join(".config")
+        .join("gh")
+        .join("hosts.yml");
     assert!(target_hosts.exists());
     assert!(!fs::symlink_metadata(&target_hosts)
         .unwrap()

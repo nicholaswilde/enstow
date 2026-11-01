@@ -47,20 +47,10 @@ pub fn check_status(actions: &[FileAction]) -> Result<Vec<FileActionStatus>, Ens
     for action in actions {
         let status = match action {
             FileAction::Symlink { source, target } => {
-                if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if meta.file_type().is_symlink() {
-                        if let Ok(dest) = std::fs::read_link(target) {
-                            if dest == *source {
-                                EntryStatus::Synced
-                            } else {
-                                EntryStatus::Conflict
-                            }
-                        } else {
-                            EntryStatus::Conflict
-                        }
-                    } else {
-                        EntryStatus::Conflict
-                    }
+                if is_symlink_to(target, source) {
+                    EntryStatus::Synced
+                } else if target.exists() || std::fs::symlink_metadata(target).is_ok() {
+                    EntryStatus::Conflict
                 } else {
                     EntryStatus::Missing
                 }
@@ -200,22 +190,16 @@ pub fn execute_unstow_plan(
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
-                if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if meta.file_type().is_symlink() {
-                        if let Ok(destination) = std::fs::read_link(target) {
-                            if destination == *source {
-                                if dry_run {
-                                    println!("[dry-run] UNLINK {}", target.display());
-                                } else {
-                                    info!("Unlinking {}", target.display());
-                                    std::fs::remove_file(target).map_err(|e| EnstowError::Io {
-                                        path: target.to_path_buf(),
-                                        source: e,
-                                    })?;
-                                    clean_empty_parents(target, &target_canonical);
-                                }
-                            }
-                        }
+                if is_symlink_to(target, source) {
+                    if dry_run {
+                        println!("[dry-run] UNLINK {}", target.display());
+                    } else {
+                        info!("Unlinking {}", target.display());
+                        std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                            path: target.to_path_buf(),
+                            source: e,
+                        })?;
+                        clean_empty_parents(target, &target_canonical);
                     }
                 }
             }
@@ -329,17 +313,38 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     false
 }
 
-fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), EnstowError> {
+pub fn is_symlink_to(target: &Path, expected_source: &Path) -> bool {
     if let Ok(meta) = std::fs::symlink_metadata(target) {
         if meta.file_type().is_symlink() {
-            if let Ok(destination) = std::fs::read_link(target) {
-                if destination == source {
-                    // Already links to the same source
-                    return Ok(());
+            if let Ok(dest) = std::fs::read_link(target) {
+                if dest == expected_source {
+                    return true;
+                }
+                let full_dest = if dest.is_relative() {
+                    match target.parent() {
+                        Some(parent) => parent.join(&dest),
+                        None => dest,
+                    }
+                } else {
+                    dest
+                };
+                if let (Ok(c1), Ok(c2)) = (full_dest.canonicalize(), expected_source.canonicalize())
+                {
+                    return c1 == c2;
                 }
             }
         }
+    }
+    false
+}
 
+fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), EnstowError> {
+    if is_symlink_to(target, source) {
+        // Already links to the same source
+        return Ok(());
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(target) {
         if !force {
             return Err(EnstowError::Collision {
                 path: target.to_path_buf(),

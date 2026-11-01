@@ -9,7 +9,7 @@ fn test_unstow_removes_matching_symlinks_and_decrypted_secrets() {
     let target_dir = tempdir().unwrap();
 
     // Setup source files
-    let config_dir = source_dir.path().join(".config/app");
+    let config_dir = source_dir.path().join(".config").join("app");
     fs::create_dir_all(&config_dir).unwrap();
     let config_file = config_dir.join("config.toml");
     fs::write(&config_file, "setting = true\n").unwrap();
@@ -18,7 +18,7 @@ fn test_unstow_removes_matching_symlinks_and_decrypted_secrets() {
     fs::write(&secret_file, "fake_age_payload").unwrap();
 
     // Setup target files
-    let target_app_dir = target_dir.path().join(".config/app");
+    let target_app_dir = target_dir.path().join(".config").join("app");
     fs::create_dir_all(&target_app_dir).unwrap();
 
     // 1. Target symlink pointing back to source config
@@ -31,7 +31,11 @@ fn test_unstow_removes_matching_symlinks_and_decrypted_secrets() {
     fs::write(&target_secret, "decrypted_secret_data").unwrap();
 
     // 3. Unrelated file that must NOT be removed
-    let unrelated_file = target_dir.path().join(".config/app/other.txt");
+    let unrelated_file = target_dir
+        .path()
+        .join(".config")
+        .join("app")
+        .join("other.txt");
     fs::write(&unrelated_file, "do not touch").unwrap();
 
     let args = CommonArgs {
@@ -68,12 +72,17 @@ fn test_unstow_cleans_empty_parent_directories() {
     let source_dir = tempdir().unwrap();
     let target_dir = tempdir().unwrap();
 
-    let nested_dir = source_dir.path().join("a/b/c");
+    let nested_dir = source_dir.path().join("a").join("b").join("c");
     fs::create_dir_all(&nested_dir).unwrap();
     let file = nested_dir.join("file.txt");
     fs::write(&file, "test").unwrap();
 
-    let target_file = target_dir.path().join("a/b/c/file.txt");
+    let target_file = target_dir
+        .path()
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("file.txt");
     fs::create_dir_all(target_file.parent().unwrap()).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&file, &target_file).unwrap();
@@ -90,8 +99,8 @@ fn test_unstow_cleans_empty_parent_directories() {
     execute_unstow_plan(&plan, target_dir.path(), false).unwrap();
 
     assert!(!target_file.exists());
-    assert!(!target_dir.path().join("a/b/c").exists());
-    assert!(!target_dir.path().join("a/b").exists());
+    assert!(!target_dir.path().join("a").join("b").join("c").exists());
+    assert!(!target_dir.path().join("a").join("b").exists());
     assert!(!target_dir.path().join("a").exists());
     assert!(target_dir.path().exists());
 }

@@ -36,7 +36,7 @@ fn test_write_secure_file_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempdir().unwrap();
-    let secret_dest = dir.path().join("subdir/target_secret.txt");
+    let secret_dest = dir.path().join("subdir").join("target_secret.txt");
     let content = b"confidential";
 
     enstow::crypto::write_secure_file(&secret_dest, content, false).unwrap();

@@ -85,7 +85,6 @@ fn test_collision_overwritten_with_force() {
             .unwrap()
             .file_type()
             .is_symlink());
-        let points_to = fs::read_link(&existing_target).unwrap();
-        assert_eq!(points_to, file);
+        assert!(enstow::stow::is_symlink_to(&existing_target, &file));
     }
 }
