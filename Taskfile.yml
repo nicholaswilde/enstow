@@ -1,0 +1,152 @@
+---
+version: '3'
+
+dotenv: ['.env']
+
+tasks:
+  clippy:
+    desc: Run cargo clippy
+    cmds:
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  default:
+    cmds:
+      - task -l
+
+  deps:
+    desc: Install dependencies
+    cmds:
+      - cargo install cross --git https://github.com/cross-rs/cross
+
+  build:
+    desc: Build the project for all supported architectures (requires cross)
+    cmds:
+      - task: build:amd64
+      - task: build:arm64
+      - task: build:armv7
+      - task: build:armv6
+
+  build:amd64:
+    desc: Build for AMD64 (x86_64)
+    cmds:
+      - cross build --release --target x86_64-unknown-linux-gnu
+
+  build:arm64:
+    desc: Build for ARM64 (aarch64)
+    cmds:
+      - cross build --release --target aarch64-unknown-linux-gnu
+
+  build:armv7:
+    desc: Build for ARMv7
+    cmds:
+      - cross build --release --target armv7-unknown-linux-gnueabihf
+
+  build:armv6:
+    desc: Build for ARMv6
+    cmds:
+      - cross build --release --target arm-unknown-linux-gnueabihf
+
+  build:local:
+    desc: Build the project in release mode for the current architecture
+    cmds:
+      - cargo build --release
+
+  build:debug:
+    desc: Build the project in debug mode
+    cmds:
+      - cargo build
+
+  build:ci:
+    desc: Build using the CI profile (non-incremental)
+    cmds:
+      - cargo build --profile ci
+
+  build:release-profile:
+    desc: Build using the release profile explicitly
+    cmds:
+      - cargo build --profile release
+
+  run:
+    desc: Run the project (shows help by default)
+    cmds:
+      - cargo run -- --help
+
+  check:
+    desc: Check code for errors without generating binary
+    cmds:
+      - cargo check
+
+  test:
+    desc: Run all tests (fmt, clippy, and unit tests)
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - cargo test
+      - task: clippy
+
+  test:ci:
+    desc: Run tests using the CI profile
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - cargo test --profile ci
+      - task: clippy
+
+  fmt:
+    desc: Format code with rustfmt
+    cmds:
+      - cargo fmt --all
+
+  fmt:check:
+    desc: Check code formatting with rustfmt
+    cmds:
+      - cargo fmt -- --check
+
+  fmt:md:
+    desc: Format Markdown files with rumdl
+    cmds:
+      - rumdl fmt .
+
+  lint:
+    desc: Lint code with clippy
+    cmds:
+      - cargo clippy -- -D warnings
+
+  lint:md:
+    desc: Lint Markdown files with rumdl
+    cmds:
+      - rumdl check .
+
+  coverage:
+    desc: Run tests and generate coverage report (stdout summary)
+    cmds:
+      - cargo llvm-cov --all-features --workspace --summary-only
+
+  coverage:report:
+    desc: Run tests and generate LCOV coverage report (for Coveralls)
+    cmds:
+      - cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+  coverage:upload:
+    desc: Upload coverage report to Coveralls
+    precondition:
+      - sh: test -f lcov.info
+        msg: "lcov.info doesn't exist"
+    cmds:
+      - coveralls report lcov.info -n -r {{ .COVERALLS_REPO_TOKEN }}
+    silent: true
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cargo clean
+
+  release:
+    desc: Automated release tagging, validation, and version bump (./scripts/release.sh)
+    cmds:
+      - ./scripts/release.sh {{.CLI_ARGS}}
+
+  release:summary:
+    desc: Generate categorized release notes and update draft release (./scripts/release_summary.py)
+    cmds:
+      - ./scripts/release_summary.py {{.CLI_ARGS}}

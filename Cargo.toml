@@ -1,0 +1,33 @@
+[package]
+name = "enstow"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nicholas Wilde"]
+description = "A secret-aware dotfile manager combining stow symlinking with sops and age decryption"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+walkdir = "2.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10"
+age = { version = "0.12.1", features = ["ssh", "armor"] }
+
+[dev-dependencies]
+tempfile = "3.16"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.ci]
+inherits = "dev"
+incremental = false
+debug = 0
