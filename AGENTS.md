@@ -182,6 +182,8 @@ NEVER commit or stage sensitive personal, financial, or security data to reposit
 - **Verification:** Run tests and linters via `task test` or `cargo test && cargo clippy -- -D warnings`.
 - **Cross-Platform Filesystem & Symlinks:**
   - Never compare symlinks using raw equality (`dest == source`). Always resolve relative links against `target.parent()` and compare canonicalized paths via `is_symlink_to`.
+  - Normalize Windows verbatim prefixes (`\\?\`, `\\?\UNC\`, `\??\`) before checking ancestry (`starts_with`) or equality; `canonicalize()` emits `\\?\` while `read_link()` returns paths without it, causing prefix component mismatches.
   - Avoid hardcoded forward slashes in path joins (`path.join("dir/file")`); use `.join("dir").join("file")` for Windows compatibility.
   - In integration/unit tests, compare canonical paths (`fs::canonicalize()`) to prevent failures from short paths (`RUNNER~1`) or macOS symlinked root paths (`/var` vs `/private/var`).
+  - When asserting symlink removal/pruning in tests, never use `assert!(!path.exists())` because dangling symlinks return `false`; always assert `assert!(fs::symlink_metadata(path).is_err())`.
   - When creating test symlink fixtures, never use `#[cfg(unix)]` alone; always pair with `#[cfg(windows)] std::os::windows::fs::symlink_file(...)` to prevent silent missing-file failures on Windows runners.
