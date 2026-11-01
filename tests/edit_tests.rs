@@ -58,15 +58,26 @@ fn test_edit_file_age_modifies_and_reencrypts() {
     let secret_file = dir.path().join("app.env.age");
     setup_age_key_and_file(&key_file, &secret_file, b"INITIAL_SECRET=123\n");
 
-    // Use a shell command as editor to overwrite the temp file
-    let editor_cmd = "bash -c 'echo \"UPDATED_SECRET=456\" > \"$1\"' --";
+    #[cfg(windows)]
+    let editor_cmd = {
+        let script = dir.path().join("mock_editor.bat");
+        fs::write(
+            &script,
+            "@echo off\r\n(echo UPDATED_SECRET=456)> \"%~1\"\r\n",
+        )
+        .unwrap();
+        format!("call \"{}\"", script.display())
+    };
+    #[cfg(not(windows))]
+    let editor_cmd = "sh -c 'echo \"UPDATED_SECRET=456\" > \"$1\"' --".to_string();
 
-    let modified = edit_file_age(&secret_file, &[], Some(&key_file), Some(editor_cmd)).unwrap();
+    let modified = edit_file_age(&secret_file, &[], Some(&key_file), Some(&editor_cmd)).unwrap();
     assert!(modified);
 
     // Verify decrypted content contains updated secret
     let decrypted = enstow::crypto::decrypt_age(&secret_file, Some(&key_file)).unwrap();
-    assert_eq!(decrypted, b"UPDATED_SECRET=456\n");
+    let content_str = String::from_utf8(decrypted).unwrap();
+    assert_eq!(content_str.replace("\r\n", "\n"), "UPDATED_SECRET=456\n");
 }
 
 #[test]
