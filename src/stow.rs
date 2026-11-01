@@ -89,12 +89,14 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
         source: e,
     })?;
 
+    let ignore_patterns = load_ignore_patterns(&source_root);
+
     let mut actions = Vec::new();
 
     for entry in WalkDir::new(&source_root)
         .min_depth(1)
         .into_iter()
-        .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or_default()))
+        .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or_default(), &ignore_patterns))
     {
         let entry = entry.map_err(|e| EnstowError::Io {
             path: e.path().unwrap_or(&source_root).to_path_buf(),
@@ -255,8 +257,26 @@ fn clean_empty_parents(path: &Path, stop_at: &Path) {
     }
 }
 
-fn is_ignored(name: &str) -> bool {
-    matches!(
+fn load_ignore_patterns(root: &Path) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let candidates = [root.join(".enstowignore"), root.join(".stow-local-ignore")];
+
+    for file in candidates {
+        if let Ok(content) = std::fs::read_to_string(&file) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    patterns.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    patterns
+}
+
+fn is_ignored(name: &str, patterns: &[String]) -> bool {
+    let default_ignored = matches!(
         name,
         ".git"
             | ".gitignore"
@@ -266,7 +286,47 @@ fn is_ignored(name: &str) -> bool {
             | ".github"
             | "target"
             | "Cargo.lock"
-    )
+            | ".enstowignore"
+            | ".stow-local-ignore"
+    );
+
+    if default_ignored {
+        return true;
+    }
+
+    for pattern in patterns {
+        if glob_matches(pattern, name) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    if pattern == text {
+        return true;
+    }
+
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        if !suffix.contains('*') {
+            return text.ends_with(suffix);
+        }
+    }
+
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        if !prefix.contains('*') {
+            return text.starts_with(prefix);
+        }
+    }
+
+    // Ponytail simple wildcard matching
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 2 {
+        return text.starts_with(parts[0]) && text.ends_with(parts[1]);
+    }
+
+    false
 }
 
 fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), EnstowError> {
