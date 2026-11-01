@@ -39,15 +39,17 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Status { common, json }) => {
             let actions = stow::plan_stow(&common)?;
-            let statuses = stow::check_status(&actions)?;
+            let statuses = stow::check_status(&actions, common.age_key_file.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&statuses)?);
             } else {
                 for item in statuses {
                     let status_str = match item.status {
-                        stow::EntryStatus::Synced => "\x1b[32mSYNCED\x1b[0m  ",
-                        stow::EntryStatus::Missing => "\x1b[33mMISSING\x1b[0m ",
-                        stow::EntryStatus::Conflict => "\x1b[31mCONFLICT\x1b[0m",
+                        stow::EntryStatus::Synced => "\x1b[32mSYNCED\x1b[0m    ",
+                        stow::EntryStatus::Missing => "\x1b[33mMISSING\x1b[0m   ",
+                        stow::EntryStatus::Conflict => "\x1b[31mCONFLICT\x1b[0m  ",
+                        stow::EntryStatus::Modified => "\x1b[35mMODIFIED\x1b[0m  ",
+                        stow::EntryStatus::Unverified => "\x1b[36mUNVERIFIED\x1b[0m",
                     };
                     println!(
                         "{} {} -> {}",

@@ -191,7 +191,7 @@ fn test_multi_package_stow_unstow_status_integration() {
     };
     let plan_status = plan_stow(&args_status_zsh).unwrap();
     assert_eq!(plan_status.len(), 1);
-    let statuses = check_status(&plan_status).unwrap();
+    let statuses = check_status(&plan_status, None).unwrap();
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].status, EntryStatus::Synced);
 

@@ -27,12 +27,15 @@ impl FileAction {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryStatus {
     Synced,
     Missing,
     Conflict,
+    #[serde(alias = "drift")]
+    Modified,
+    Unverified,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, serde::Serialize)]
@@ -41,7 +44,10 @@ pub struct FileActionStatus {
     pub status: EntryStatus,
 }
 
-pub fn check_status(actions: &[FileAction]) -> Result<Vec<FileActionStatus>, EnstowError> {
+pub fn check_status(
+    actions: &[FileAction],
+    age_key_file: Option<&Path>,
+) -> Result<Vec<FileActionStatus>, EnstowError> {
     let mut statuses = Vec::new();
 
     for action in actions {
@@ -55,9 +61,31 @@ pub fn check_status(actions: &[FileAction]) -> Result<Vec<FileActionStatus>, Ens
                     EntryStatus::Missing
                 }
             }
-            FileAction::Decrypt { source: _, target } => {
-                if target.exists() {
-                    EntryStatus::Synced
+            FileAction::Decrypt { source, target } => {
+                if let Ok(meta) = std::fs::symlink_metadata(target) {
+                    if meta.file_type().is_symlink() || meta.is_dir() {
+                        EntryStatus::Conflict
+                    } else {
+                        let secret_type = detect_secret_type(source).ok_or_else(|| {
+                            EnstowError::Config(format!(
+                                "Unrecognized secret format: {}",
+                                source.display()
+                            ))
+                        })?;
+                        match crate::crypto::decrypt_to_memory(source, secret_type, age_key_file) {
+                            Ok(decrypted) => match std::fs::read(target) {
+                                Ok(existing) => {
+                                    if existing == decrypted {
+                                        EntryStatus::Synced
+                                    } else {
+                                        EntryStatus::Modified
+                                    }
+                                }
+                                Err(_) => EntryStatus::Conflict,
+                            },
+                            Err(_) => EntryStatus::Unverified,
+                        }
+                    }
                 } else {
                     EntryStatus::Missing
                 }
