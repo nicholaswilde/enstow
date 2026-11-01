@@ -14,6 +14,8 @@ fn test_status_classification() {
     let sync_tgt = target_dir.path().join("synced.txt");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&sync_src, &sync_tgt).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&sync_src, &sync_tgt).unwrap();
 
     // 2. Missing file (in source, but target absent)
     let missing_src = source_dir.path().join("missing.txt");

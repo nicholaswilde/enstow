@@ -25,6 +25,8 @@ fn test_unstow_removes_matching_symlinks_and_decrypted_secrets() {
     let target_symlink = target_app_dir.join("config.toml");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&config_file, &target_symlink).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&config_file, &target_symlink).unwrap();
 
     // 2. Target decrypted plaintext secret
     let target_secret = target_app_dir.join("secret");
@@ -86,6 +88,8 @@ fn test_unstow_cleans_empty_parent_directories() {
     fs::create_dir_all(target_file.parent().unwrap()).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&file, &target_file).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&file, &target_file).unwrap();
 
     let args = CommonArgs {
         source: source_dir.path().to_path_buf(),

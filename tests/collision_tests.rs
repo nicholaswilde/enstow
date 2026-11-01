@@ -16,6 +16,8 @@ fn test_skip_existing_identical_symlink() {
     // Pre-create identical symlink
     #[cfg(unix)]
     std::os::unix::fs::symlink(&file, &target_link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&file, &target_link).unwrap();
 
     let args = CommonArgs {
         source: source_dir.path().to_path_buf(),
@@ -79,12 +81,9 @@ fn test_collision_overwritten_with_force() {
     // With force=true, should succeed and overwrite/replace target
     execute_plan(&actions, false, None, true).unwrap();
 
-    #[cfg(unix)]
-    {
-        assert!(fs::symlink_metadata(&existing_target)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert!(enstow::stow::is_symlink_to(&existing_target, &file));
-    }
+    assert!(fs::symlink_metadata(&existing_target)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(enstow::stow::is_symlink_to(&existing_target, &file));
 }
