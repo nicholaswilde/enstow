@@ -180,3 +180,7 @@ NEVER commit or stage sensitive personal, financial, or security data to reposit
 - **Surgical Changes:** Modify only requested code. Keep edits focused and verifiable.
 - **Response Style (Caveman):** Terse, technical, zero fluff.
 - **Verification:** Run tests and linters via `task test` or `cargo test && cargo clippy -- -D warnings`.
+- **Cross-Platform Filesystem & Symlinks:**
+  - Never compare symlinks using raw equality (`dest == source`). Always resolve relative links against `target.parent()` and compare canonicalized paths via `is_symlink_to`.
+  - Avoid hardcoded forward slashes in path joins (`path.join("dir/file")`); use `.join("dir").join("file")` for Windows compatibility.
+  - In integration/unit tests, compare canonical paths (`fs::canonicalize()`) to prevent failures from short paths (`RUNNER~1`) or macOS symlinked root paths (`/var` vs `/private/var`).
