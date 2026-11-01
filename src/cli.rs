@@ -63,7 +63,14 @@ pub enum Commands {
         age_key_file: Option<PathBuf>,
     },
     /// Show status of dotfiles and symlinks
-    Status(CommonArgs),
+    Status {
+        #[command(flatten)]
+        common: CommonArgs,
+
+        /// Output status in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn default_target_dir() -> PathBuf {

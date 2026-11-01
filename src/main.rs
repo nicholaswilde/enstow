@@ -26,9 +26,26 @@ fn main() -> anyhow::Result<()> {
             let actions = stow::plan_stow(&args)?;
             stow::execute_unstow_plan(&actions, &args.target, args.dry_run)?;
         }
-        Some(Commands::Status(args)) => {
-            let actions = stow::plan_stow(&args)?;
-            stow::execute_plan(&actions, true, args.age_key_file.as_deref(), args.force)?;
+        Some(Commands::Status { common, json }) => {
+            let actions = stow::plan_stow(&common)?;
+            let statuses = stow::check_status(&actions)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&statuses)?);
+            } else {
+                for item in statuses {
+                    let status_str = match item.status {
+                        stow::EntryStatus::Synced => "\x1b[32mSYNCED\x1b[0m  ",
+                        stow::EntryStatus::Missing => "\x1b[33mMISSING\x1b[0m ",
+                        stow::EntryStatus::Conflict => "\x1b[31mCONFLICT\x1b[0m",
+                    };
+                    println!(
+                        "{} {} -> {}",
+                        status_str,
+                        item.action.target().display(),
+                        item.action.source().display()
+                    );
+                }
+            }
         }
         Some(Commands::Encrypt {
             file,

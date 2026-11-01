@@ -5,10 +5,82 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 use walkdir::WalkDir;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, serde::Serialize)]
 pub enum FileAction {
     Symlink { source: PathBuf, target: PathBuf },
     Decrypt { source: PathBuf, target: PathBuf },
+}
+
+impl FileAction {
+    pub fn source(&self) -> &Path {
+        match self {
+            FileAction::Symlink { source, .. } => source,
+            FileAction::Decrypt { source, .. } => source,
+        }
+    }
+
+    pub fn target(&self) -> &Path {
+        match self {
+            FileAction::Symlink { target, .. } => target,
+            FileAction::Decrypt { target, .. } => target,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryStatus {
+    Synced,
+    Missing,
+    Conflict,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, serde::Serialize)]
+pub struct FileActionStatus {
+    pub action: FileAction,
+    pub status: EntryStatus,
+}
+
+pub fn check_status(actions: &[FileAction]) -> Result<Vec<FileActionStatus>, EnstowError> {
+    let mut statuses = Vec::new();
+
+    for action in actions {
+        let status = match action {
+            FileAction::Symlink { source, target } => {
+                if let Ok(meta) = std::fs::symlink_metadata(target) {
+                    if meta.file_type().is_symlink() {
+                        if let Ok(dest) = std::fs::read_link(target) {
+                            if dest == *source {
+                                EntryStatus::Synced
+                            } else {
+                                EntryStatus::Conflict
+                            }
+                        } else {
+                            EntryStatus::Conflict
+                        }
+                    } else {
+                        EntryStatus::Conflict
+                    }
+                } else {
+                    EntryStatus::Missing
+                }
+            }
+            FileAction::Decrypt { source: _, target } => {
+                if target.exists() {
+                    EntryStatus::Synced
+                } else {
+                    EntryStatus::Missing
+                }
+            }
+        };
+
+        statuses.push(FileActionStatus {
+            action: action.clone(),
+            status,
+        });
+    }
+
+    Ok(statuses)
 }
 
 pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
