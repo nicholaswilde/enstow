@@ -30,9 +30,19 @@ fn main() -> anyhow::Result<()> {
             let actions = stow::plan_stow(&args)?;
             stow::execute_plan(&actions, true, args.age_key_file.as_deref(), args.force)?;
         }
-        Some(Commands::Encrypt { file }) => {
-            println!("Encrypting {}", file.display());
-            // TODO: Encryption implementation
+        Some(Commands::Encrypt {
+            file,
+            output,
+            recipient,
+            age_key_file,
+        }) => {
+            let out = output.unwrap_or_else(|| {
+                let mut p = file.as_os_str().to_os_string();
+                p.push(".age");
+                std::path::PathBuf::from(p)
+            });
+            enstow::crypto::encrypt_file_age(&file, &out, &recipient, age_key_file.as_deref())?;
+            println!("Encrypted {} -> {}", file.display(), out.display());
         }
         None => {
             // Default to applying with root common args

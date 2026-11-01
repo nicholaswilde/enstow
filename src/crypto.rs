@@ -133,6 +133,102 @@ pub fn decrypt_sops(path: &Path) -> Result<Vec<u8>, EnstowError> {
     Ok(output.stdout)
 }
 
+pub fn encrypt_file_age(
+    input_path: &Path,
+    output_path: &Path,
+    recipients: &[String],
+    age_key_file: Option<&Path>,
+) -> Result<(), EnstowError> {
+    use std::io::Write;
+    use std::str::FromStr;
+
+    let mut recipient_list: Vec<Box<dyn age::Recipient + Send>> = Vec::new();
+
+    // 1. Explicit recipient strings
+    for r in recipients {
+        let pk =
+            age::x25519::Recipient::from_str(r).map_err(|e| EnstowError::Config(e.to_string()))?;
+        recipient_list.push(Box::new(pk));
+    }
+
+    // 2. SOPS_AGE_RECIPIENTS env var if none provided
+    if recipient_list.is_empty() {
+        if let Ok(env_recips) = std::env::var("SOPS_AGE_RECIPIENTS") {
+            for r in env_recips
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let pk = age::x25519::Recipient::from_str(r)
+                    .map_err(|e| EnstowError::Config(e.to_string()))?;
+                recipient_list.push(Box::new(pk));
+            }
+        }
+    }
+
+    // 3. Fallback to extracting public keys from key files
+    if recipient_list.is_empty() {
+        let key_paths = get_age_key_paths(age_key_file);
+        for kp in key_paths {
+            if kp.exists() {
+                if let Ok(id_file) = age::IdentityFile::from_file(kp.to_string_lossy().into_owned())
+                {
+                    if let Ok(recips) = id_file.to_recipients() {
+                        recipient_list.extend(recips);
+                    }
+                }
+            }
+        }
+    }
+
+    if recipient_list.is_empty() {
+        return Err(EnstowError::Config(
+            "No age recipients found. Provide --recipient, set SOPS_AGE_RECIPIENTS, or ensure an age key file exists.".into(),
+        ));
+    }
+
+    let plaintext = std::fs::read(input_path).map_err(|e| EnstowError::Io {
+        path: input_path.to_path_buf(),
+        source: e,
+    })?;
+
+    let recip_refs: Vec<&dyn age::Recipient> = recipient_list
+        .iter()
+        .map(|r| &**r as &dyn age::Recipient)
+        .collect();
+
+    let encryptor = age::Encryptor::with_recipients(recip_refs.into_iter())
+        .map_err(|e| EnstowError::Config(format!("Failed to initialize encryptor: {e}")))?;
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })?;
+    }
+
+    let mut out_file = std::fs::File::create(output_path).map_err(|e| EnstowError::Io {
+        path: output_path.to_path_buf(),
+        source: e,
+    })?;
+
+    let mut writer = encryptor
+        .wrap_output(&mut out_file)
+        .map_err(|e| EnstowError::Config(format!("Failed to wrap encryptor output: {e}")))?;
+
+    writer.write_all(&plaintext).map_err(|e| EnstowError::Io {
+        path: output_path.to_path_buf(),
+        source: e,
+    })?;
+
+    writer.finish().map_err(|e| EnstowError::Io {
+        path: output_path.to_path_buf(),
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(), EnstowError> {
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         if !force {
