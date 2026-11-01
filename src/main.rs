@@ -22,6 +22,10 @@ fn main() -> anyhow::Result<()> {
                 args.force,
             )?;
         }
+        Some(Commands::Unstow(args)) => {
+            let actions = stow::plan_stow(&args)?;
+            stow::execute_unstow_plan(&actions, &args.target, args.dry_run)?;
+        }
         Some(Commands::Status(args)) => {
             let actions = stow::plan_stow(&args)?;
             stow::execute_plan(&actions, true, args.age_key_file.as_deref(), args.force)?;

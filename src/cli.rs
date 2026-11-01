@@ -43,6 +43,8 @@ pub struct CommonArgs {
 pub enum Commands {
     /// Apply dotfiles: symlink regular files and decrypt secret files
     Apply(CommonArgs),
+    /// Unstow dotfiles: remove symlinks and decrypted secret files
+    Unstow(CommonArgs),
     /// Encrypt a secret dotfile
     Encrypt {
         /// File to encrypt

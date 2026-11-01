@@ -115,6 +115,74 @@ pub fn execute_plan(
     Ok(())
 }
 
+pub fn execute_unstow_plan(
+    actions: &[FileAction],
+    target_root: &Path,
+    dry_run: bool,
+) -> Result<(), EnstowError> {
+    let target_canonical = target_root
+        .canonicalize()
+        .unwrap_or_else(|_| target_root.to_path_buf());
+    for action in actions {
+        match action {
+            FileAction::Symlink { source, target } => {
+                if let Ok(meta) = std::fs::symlink_metadata(target) {
+                    if meta.file_type().is_symlink() {
+                        if let Ok(destination) = std::fs::read_link(target) {
+                            if destination == *source {
+                                if dry_run {
+                                    println!("[dry-run] UNLINK {}", target.display());
+                                } else {
+                                    info!("Unlinking {}", target.display());
+                                    std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                                        path: target.to_path_buf(),
+                                        source: e,
+                                    })?;
+                                    clean_empty_parents(target, &target_canonical);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            FileAction::Decrypt { source: _, target } => {
+                if target.exists() {
+                    if dry_run {
+                        println!("[dry-run] REMOVE SECRET {}", target.display());
+                    } else {
+                        info!("Removing secret {}", target.display());
+                        std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                            path: target.to_path_buf(),
+                            source: e,
+                        })?;
+                        clean_empty_parents(target, &target_canonical);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn clean_empty_parents(path: &Path, stop_at: &Path) {
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if let Ok(c) = dir.canonicalize() {
+            if c == stop_at {
+                break;
+            }
+        }
+        if dir == stop_at {
+            break;
+        }
+        // Try removing dir; if not empty, rmdir fails and we stop
+        if std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+        current = dir.parent();
+    }
+}
+
 fn is_ignored(name: &str) -> bool {
     matches!(
         name,
