@@ -253,10 +253,11 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
 
                     let norm_dest = normalize_path(&full_dest);
                     let belongs_to_pkg = pkg_roots.iter().any(|pkg_root| {
-                        norm_dest.starts_with(pkg_root)
+                        let norm_pkg = normalize_path(pkg_root);
+                        norm_dest.starts_with(&norm_pkg)
                             || full_dest
                                 .canonicalize()
-                                .map(|c| c.starts_with(pkg_root))
+                                .map(|c| normalize_path(&c).starts_with(&norm_pkg))
                                 .unwrap_or(false)
                     });
 
@@ -265,7 +266,8 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
                             let t = a.target();
                             t == symlink_path
                                 || normalize_path(t) == normalize_path(symlink_path)
-                                || t.canonicalize().ok() == symlink_path.canonicalize().ok()
+                                || t.canonicalize().ok().map(|c| normalize_path(&c))
+                                    == symlink_path.canonicalize().ok().map(|c| normalize_path(&c))
                         });
 
                         if !already_active {
@@ -399,15 +401,16 @@ pub fn execute_unstow_plan(
 }
 
 fn clean_empty_parents(path: &Path, stop_at: &Path) {
+    let norm_stop = normalize_path(stop_at);
     let mut current = path.parent();
     while let Some(dir) = current {
+        if normalize_path(dir) == norm_stop {
+            break;
+        }
         if let Ok(c) = dir.canonicalize() {
-            if c == stop_at {
+            if normalize_path(&c) == norm_stop {
                 break;
             }
-        }
-        if dir == stop_at {
-            break;
         }
         // Try removing dir; if not empty, rmdir fails and we stop
         if std::fs::remove_dir(dir).is_err() {
@@ -489,10 +492,24 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     false
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else if let Some(stripped) = s.strip_prefix(r"\??\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+pub fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
+    let stripped = strip_verbatim_prefix(path);
     let mut out = PathBuf::new();
-    for comp in path.components() {
+    for comp in stripped.components() {
         match comp {
             Component::CurDir => {}
             Component::ParentDir => {
@@ -527,7 +544,7 @@ pub fn is_symlink_to(target: &Path, expected_source: &Path) -> bool {
                 }
                 if let (Ok(c1), Ok(c2)) = (full_dest.canonicalize(), expected_source.canonicalize())
                 {
-                    return c1 == c2;
+                    return normalize_path(&c1) == normalize_path(&c2);
                 }
             }
         }
@@ -611,5 +628,21 @@ mod tests {
 
         let actions = plan_stow(&args).unwrap();
         assert_eq!(actions.len(), 2);
+    }
+
+    #[test]
+    fn test_normalize_path_strips_verbatim_prefixes() {
+        assert_eq!(
+            normalize_path(Path::new(r"\\?\C:\path\to\file")),
+            Path::new(r"C:\path\to\file")
+        );
+        assert_eq!(
+            normalize_path(Path::new(r"\??\C:\path\to\file")),
+            Path::new(r"C:\path\to\file")
+        );
+        assert_eq!(
+            normalize_path(Path::new(r"\\?\UNC\server\share\file")),
+            Path::new(r"\\server\share\file")
+        );
     }
 }

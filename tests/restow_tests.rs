@@ -90,7 +90,7 @@ fn test_restow_prunes_removed_dotfile() {
     execute_plan(&apply_plan, false, None, false).unwrap();
 
     // Verify stale file was pruned and kept file remains linked
-    assert!(!target_file2.exists());
+    assert!(fs::symlink_metadata(&target_file2).is_err());
     assert!(target_file1.exists());
     assert!(is_symlink_to(&target_file1, &file1));
 }
@@ -148,7 +148,7 @@ fn test_restow_prunes_removed_nested_directory() {
     execute_plan(&apply_plan, false, None, false).unwrap();
 
     // target_stale and empty target_nested_dir pruned
-    assert!(!target_stale.exists());
+    assert!(fs::symlink_metadata(&target_stale).is_err());
     assert!(!target_nested_dir.exists());
 
     // target_kept preserved
