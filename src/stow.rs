@@ -71,7 +71,11 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     Ok(actions)
 }
 
-pub fn execute_plan(actions: &[FileAction], dry_run: bool) -> Result<(), EnstowError> {
+pub fn execute_plan(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+) -> Result<(), EnstowError> {
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
@@ -95,7 +99,15 @@ pub fn execute_plan(actions: &[FileAction], dry_run: bool) -> Result<(), EnstowE
                     );
                 } else {
                     info!("Decrypting {} -> {}", source.display(), target.display());
-                    // decryption and secure write will be executed here
+                    let secret_type = detect_secret_type(source).ok_or_else(|| {
+                        EnstowError::Config(format!(
+                            "Unrecognized secret format: {}",
+                            source.display()
+                        ))
+                    })?;
+                    let plaintext =
+                        crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
+                    crate::crypto::write_secure_file(target, &plaintext)?;
                 }
             }
         }
@@ -158,6 +170,7 @@ mod tests {
             source: dir.path().to_path_buf(),
             target: target_dir.path().to_path_buf(),
             dry_run: true,
+            age_key_file: None,
         };
 
         let actions = plan_stow(&args).unwrap();

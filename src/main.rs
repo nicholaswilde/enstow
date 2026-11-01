@@ -1,10 +1,6 @@
-mod cli;
-mod crypto;
-mod error;
-mod stow;
-
 use clap::Parser;
-use cli::{Cli, Commands};
+use enstow::cli::{Cli, Commands};
+use enstow::stow;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
@@ -19,11 +15,11 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Apply(args)) => {
             let actions = stow::plan_stow(&args)?;
-            stow::execute_plan(&actions, args.dry_run)?;
+            stow::execute_plan(&actions, args.dry_run, args.age_key_file.as_deref())?;
         }
         Some(Commands::Status(args)) => {
             let actions = stow::plan_stow(&args)?;
-            stow::execute_plan(&actions, true)?;
+            stow::execute_plan(&actions, true, args.age_key_file.as_deref())?;
         }
         Some(Commands::Encrypt { file }) => {
             println!("Encrypting {}", file.display());
@@ -32,7 +28,11 @@ fn main() -> anyhow::Result<()> {
         None => {
             // Default to applying with root common args
             let actions = stow::plan_stow(&cli.common)?;
-            stow::execute_plan(&actions, cli.common.dry_run)?;
+            stow::execute_plan(
+                &actions,
+                cli.common.dry_run,
+                cli.common.age_key_file.as_deref(),
+            )?;
         }
     }
 

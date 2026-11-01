@@ -176,6 +176,7 @@ NEVER commit or stage sensitive personal, financial, or security data to reposit
 ## 3. Development Principles & Code Style
 
 - **Build Discipline (Ponytail):** Minimum code solving problem. Reuse stdlib; no speculative abstractions.
+- **Development Workflow (TDD):** Test-Driven Development is mandatory. Write failing test first (Red), implement minimal solution (Green), verify and refactor.
 - **Surgical Changes:** Modify only requested code. Keep edits focused and verifiable.
 - **Response Style (Caveman):** Terse, technical, zero fluff.
 - **Verification:** Run tests and linters via `task test` or `cargo test && cargo clippy -- -D warnings`.

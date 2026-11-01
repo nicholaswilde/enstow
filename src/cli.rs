@@ -29,6 +29,10 @@ pub struct CommonArgs {
     /// Preview actions without writing changes to disk
     #[arg(short = 'n', long)]
     pub dry_run: bool,
+
+    /// Explicit path to age identity key file
+    #[arg(long, env = "SOPS_AGE_KEY_FILE")]
+    pub age_key_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
