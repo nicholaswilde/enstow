@@ -184,3 +184,4 @@ NEVER commit or stage sensitive personal, financial, or security data to reposit
   - Never compare symlinks using raw equality (`dest == source`). Always resolve relative links against `target.parent()` and compare canonicalized paths via `is_symlink_to`.
   - Avoid hardcoded forward slashes in path joins (`path.join("dir/file")`); use `.join("dir").join("file")` for Windows compatibility.
   - In integration/unit tests, compare canonical paths (`fs::canonicalize()`) to prevent failures from short paths (`RUNNER~1`) or macOS symlinked root paths (`/var` vs `/private/var`).
+  - When creating test symlink fixtures, never use `#[cfg(unix)]` alone; always pair with `#[cfg(windows)] std::os::windows::fs::symlink_file(...)` to prevent silent missing-file failures on Windows runners.
