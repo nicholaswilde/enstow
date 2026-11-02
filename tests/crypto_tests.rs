@@ -340,15 +340,26 @@ fn test_decrypt_sops_all_branches() {
     let dir = tempdir().unwrap();
 
     let orig_path = std::env::var("PATH").unwrap_or_default();
+    struct PathGuard(String);
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            std::env::set_var("PATH", &self.0);
+        }
+    }
+    let _path_guard = PathGuard(orig_path.clone());
+
     let mock_file = dir.path().join("test.sops.yaml");
     fs::write(&mock_file, "foo: bar").unwrap();
 
-    // 1. PATH contains no sops executable -> fails to execute sops
+    // 1. PATH contains no sops executable -> fails to execute sops (or exits with non-zero under QEMU)
     std::env::set_var("PATH", dir.path()); // empty dir
     let err = enstow::crypto::decrypt_sops(&mock_file).unwrap_err();
     assert!(matches!(err, EnstowError::Decryption { .. }));
     let err_msg = err.to_string();
-    assert!(err_msg.contains("Failed to execute `sops`"));
+    assert!(
+        err_msg.contains("Failed to execute `sops`") || err_msg.contains("sops decryption failed"),
+        "Unexpected err_msg: {err_msg}"
+    );
 
     // 2. PATH has mock sops that fails (status != 0)
     let mock_bin_dir = dir.path().join("bin");
@@ -371,6 +382,4 @@ fn test_decrypt_sops_all_branches() {
     fs::write(&mock_sops, "#!/bin/sh\necho 'decrypted payload'\nexit 0\n").unwrap();
     let out = enstow::crypto::decrypt_sops(&mock_file).unwrap();
     assert_eq!(String::from_utf8_lossy(&out).trim(), "decrypted payload");
-
-    std::env::set_var("PATH", orig_path);
 }
