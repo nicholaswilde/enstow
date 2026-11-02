@@ -62,6 +62,7 @@ fn test_status_classification() {
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -123,6 +124,7 @@ fn test_secret_status_drift_detection_and_missing_keys() {
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let plan = plan_stow(&args).unwrap();

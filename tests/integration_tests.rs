@@ -49,6 +49,7 @@ fn test_end_to_end_nested_stow_with_mixed_regular_and_age_files() {
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     // 3. Plan stow

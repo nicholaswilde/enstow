@@ -67,6 +67,8 @@ pub struct ConfigFile {
     pub json: Option<bool>,
     pub output: Option<String>,
     pub log_level: Option<String>,
+    pub backup: Option<bool>,
+    pub backup_dir: Option<PathBuf>,
 }
 
 impl ConfigFile {
@@ -210,6 +212,8 @@ pub struct ResolvedCommonArgs {
     pub age_key_file: Option<PathBuf>,
     pub packages: Vec<String>,
     pub ignore: Vec<String>,
+    pub backup: bool,
+    pub backup_dir: PathBuf,
 }
 
 impl ResolvedCommonArgs {
@@ -223,6 +227,8 @@ impl ResolvedCommonArgs {
             age_key_file: self.age_key_file.clone(),
             packages: self.packages.clone(),
             ignore: self.ignore.clone(),
+            backup: self.backup,
+            backup_dir: Some(self.backup_dir.clone()),
         }
     }
 }
@@ -316,6 +322,32 @@ pub fn resolve_common_args(
         config.and_then(|c| c.prune).unwrap_or_default()
     };
 
+    // 9. Backup precedence: CLI (-b / --backup) > ENSTOW_BACKUP > Config > Default (false)
+    let backup = if cli_args.backup {
+        true
+    } else if let Some(env_backup) = parse_bool_env("ENSTOW_BACKUP") {
+        env_backup
+    } else {
+        config.and_then(|c| c.backup).unwrap_or_default()
+    };
+
+    // 10. Backup directory precedence: CLI (--backup-dir) > ENSTOW_BACKUP_DIR > Config > Default ($target/.enstow-backup)
+    let backup_dir = if let Some(bd) = &cli_args.backup_dir {
+        bd.clone()
+    } else if let Ok(bd_env) = std::env::var("ENSTOW_BACKUP_DIR") {
+        if !bd_env.trim().is_empty() {
+            PathBuf::from(bd_env)
+        } else {
+            config
+                .and_then(|c| c.backup_dir.clone())
+                .unwrap_or_else(|| target.join(".enstow-backup"))
+        }
+    } else if let Some(bd) = config.and_then(|c| c.backup_dir.clone()) {
+        bd
+    } else {
+        target.join(".enstow-backup")
+    };
+
     ResolvedCommonArgs {
         source,
         target,
@@ -325,6 +357,8 @@ pub fn resolve_common_args(
         age_key_file,
         packages,
         ignore,
+        backup,
+        backup_dir,
     }
 }
 

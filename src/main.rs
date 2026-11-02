@@ -23,11 +23,14 @@ fn main() -> anyhow::Result<()> {
                 stow::execute_unstow_plan(&stale_actions, &common.target_path(), common.dry_run)?;
             }
             let actions = stow::plan_stow(&common)?;
-            stow::execute_plan(
+            stow::execute_plan_with_backup(
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
                 common.force,
+                common.backup,
+                Some(&common.backup_dir_path()),
+                Some(&common.target_path()),
             )?;
         }
         Some(Commands::Restow(args)) => {
@@ -36,11 +39,14 @@ fn main() -> anyhow::Result<()> {
             let unstow_actions = stow::plan_unstow(&common)?;
             stow::execute_unstow_plan(&unstow_actions, &common.target_path(), common.dry_run)?;
             let apply_actions = stow::plan_stow(&common)?;
-            stow::execute_plan(
+            stow::execute_plan_with_backup(
                 &apply_actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
                 common.force,
+                common.backup,
+                Some(&common.backup_dir_path()),
+                Some(&common.target_path()),
             )?;
         }
         Some(Commands::Unstow(args)) => {
@@ -131,11 +137,14 @@ fn main() -> anyhow::Result<()> {
             let common =
                 enstow::config::resolve_common_args(&cli.common, config.as_ref()).to_common_args();
             let actions = stow::plan_stow(&common)?;
-            stow::execute_plan(
+            stow::execute_plan_with_backup(
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
                 common.force,
+                common.backup,
+                Some(&common.backup_dir_path()),
+                Some(&common.target_path()),
             )?;
         }
     }

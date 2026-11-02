@@ -315,6 +315,7 @@ fn is_stale_scan_ignored_dir(name: &str) -> bool {
             | ".platformio"
             | ".password-store"
             | ".password-store-backup"
+            | ".enstow-backup"
             | ".gvm"
             | ".bun"
             | ".tesseract-rs"
@@ -333,38 +334,126 @@ pub fn execute_plan(
     age_key_file: Option<&Path>,
     force: bool,
 ) -> Result<(), EnstowError> {
+    execute_plan_with_backup(actions, dry_run, age_key_file, force, false, None, None)
+}
+
+pub fn execute_plan_with_backup(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+    force: bool,
+    backup: bool,
+    backup_dir: Option<&Path>,
+    target_root: Option<&Path>,
+) -> Result<(), EnstowError> {
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
-                if dry_run {
+                if is_symlink_to(target, source) {
+                    continue;
+                }
+
+                if let Ok(meta) = std::fs::symlink_metadata(target) {
+                    if !force && !backup {
+                        return Err(EnstowError::Collision {
+                            path: target.to_path_buf(),
+                        });
+                    }
+
+                    let backup_dest =
+                        backup_dir.map(|bd| compute_backup_dest(target, bd, target_root));
+
+                    if dry_run {
+                        if backup {
+                            if let Some(dest) = &backup_dest {
+                                println!(
+                                    "[dry-run] BACKUP {} -> {}",
+                                    target.display(),
+                                    dest.display()
+                                );
+                            }
+                        }
+                        println!(
+                            "[dry-run] LINK  {} -> {}",
+                            target.display(),
+                            source.display()
+                        );
+                        continue;
+                    }
+
+                    if backup {
+                        if let Some(dest) = &backup_dest {
+                            backup_file(target, dest)?;
+                        }
+                    } else if force {
+                        remove_target(target, &meta)?;
+                    }
+                } else if dry_run {
                     println!(
                         "[dry-run] LINK  {} -> {}",
                         target.display(),
                         source.display()
                     );
-                } else {
-                    create_symlink(source, target, force)?;
+                    continue;
                 }
+
+                create_symlink(source, target, force)?;
             }
             FileAction::Decrypt { source, target } => {
-                if dry_run {
+                let target_exists = std::fs::symlink_metadata(target).is_ok();
+                if target_exists {
+                    if !force && !backup {
+                        return Err(EnstowError::Collision {
+                            path: target.to_path_buf(),
+                        });
+                    }
+
+                    let backup_dest =
+                        backup_dir.map(|bd| compute_backup_dest(target, bd, target_root));
+
+                    if dry_run {
+                        if backup {
+                            if let Some(dest) = &backup_dest {
+                                println!(
+                                    "[dry-run] BACKUP {} -> {}",
+                                    target.display(),
+                                    dest.display()
+                                );
+                            }
+                        }
+                        println!(
+                            "[dry-run] DECRYPT {} -> {} (mode 0600)",
+                            source.display(),
+                            target.display()
+                        );
+                        continue;
+                    }
+
+                    if backup {
+                        if let Some(dest) = &backup_dest {
+                            backup_file(target, dest)?;
+                        }
+                    } else if force {
+                        if let Ok(meta) = std::fs::symlink_metadata(target) {
+                            remove_target(target, &meta)?;
+                        }
+                    }
+                } else if dry_run {
                     println!(
                         "[dry-run] DECRYPT {} -> {} (mode 0600)",
                         source.display(),
                         target.display()
                     );
-                } else {
-                    info!("Decrypting {} -> {}", source.display(), target.display());
-                    let secret_type = detect_secret_type(source).ok_or_else(|| {
-                        EnstowError::Config(format!(
-                            "Unrecognized secret format: {}",
-                            source.display()
-                        ))
-                    })?;
-                    let plaintext =
-                        crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
-                    crate::crypto::write_secure_file(target, &plaintext, force)?;
+                    continue;
                 }
+
+                info!("Decrypting {} -> {}", source.display(), target.display());
+                let secret_type = detect_secret_type(source).ok_or_else(|| {
+                    EnstowError::Config(format!("Unrecognized secret format: {}", source.display()))
+                })?;
+                let plaintext =
+                    crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
+                crate::crypto::write_secure_file(target, &plaintext, force)?;
             }
         }
     }
@@ -566,6 +655,149 @@ pub fn is_symlink_to(target: &Path, expected_source: &Path) -> bool {
     false
 }
 
+fn remove_target(target: &Path, meta: &std::fs::Metadata) -> Result<(), EnstowError> {
+    if meta.file_type().is_dir() {
+        std::fs::remove_dir_all(target).map_err(|e| EnstowError::Io {
+            path: target.to_path_buf(),
+            source: e,
+        })
+    } else {
+        std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+            path: target.to_path_buf(),
+            source: e,
+        })
+    }
+}
+
+fn compute_backup_dest(target: &Path, backup_dir: &Path, target_root: Option<&Path>) -> PathBuf {
+    if let Some(root) = target_root {
+        if let Ok(rel) = target.strip_prefix(root) {
+            return backup_dir.join(rel);
+        }
+        let norm_target = normalize_path(target);
+        let norm_root = normalize_path(root);
+        if let Ok(rel) = norm_target.strip_prefix(&norm_root) {
+            return backup_dir.join(rel);
+        }
+    }
+    backup_dir.join(target.file_name().unwrap_or(target.as_os_str()))
+}
+
+fn backup_file(target: &Path, dest: &Path) -> Result<(), EnstowError> {
+    info!(
+        "Backing up collision {} -> {}",
+        target.display(),
+        dest.display()
+    );
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })?;
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(dest) {
+        remove_target(dest, &meta)?;
+    }
+
+    if std::fs::rename(target, dest).is_err() {
+        // Fallback when rename fails (e.g. cross-filesystem boundaries)
+        let meta = std::fs::symlink_metadata(target).map_err(|e| EnstowError::Io {
+            path: target.to_path_buf(),
+            source: e,
+        })?;
+
+        if meta.file_type().is_symlink() {
+            let link_dest = std::fs::read_link(target).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&link_dest, dest).map_err(|e| EnstowError::Io {
+                path: dest.to_path_buf(),
+                source: e,
+            })?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&link_dest, dest).map_err(|e| EnstowError::Io {
+                path: dest.to_path_buf(),
+                source: e,
+            })?;
+            std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+        } else if meta.file_type().is_dir() {
+            copy_dir_all(target, dest)?;
+            std::fs::remove_dir_all(target).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+        } else {
+            std::fs::copy(target, dest).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+            std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), EnstowError> {
+    std::fs::create_dir_all(dst).map_err(|e| EnstowError::Io {
+        path: dst.to_path_buf(),
+        source: e,
+    })?;
+    for entry in WalkDir::new(src) {
+        let entry = entry.map_err(|e| EnstowError::Io {
+            path: src.to_path_buf(),
+            source: e.into(),
+        })?;
+        let rel = entry
+            .path()
+            .strip_prefix(src)
+            .map_err(|e| EnstowError::Io {
+                path: entry.path().to_path_buf(),
+                source: std::io::Error::other(e),
+            })?;
+        let target_dest = dst.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target_dest).map_err(|e| EnstowError::Io {
+                path: target_dest,
+                source: e,
+            })?;
+        } else if entry.path_is_symlink() {
+            let link = std::fs::read_link(entry.path()).map_err(|e| EnstowError::Io {
+                path: entry.path().to_path_buf(),
+                source: e,
+            })?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&link, &target_dest).map_err(|e| EnstowError::Io {
+                path: target_dest,
+                source: e,
+            })?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&link, &target_dest).map_err(|e| {
+                EnstowError::Io {
+                    path: target_dest,
+                    source: e,
+                }
+            })?;
+        } else {
+            std::fs::copy(entry.path(), &target_dest).map_err(|e| EnstowError::Io {
+                path: target_dest,
+                source: e,
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), EnstowError> {
     if is_symlink_to(target, source) {
         // Already links to the same source
@@ -580,17 +812,7 @@ fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), Ensto
         }
 
         // Force overwrite: remove existing file, symlink, or directory
-        if meta.file_type().is_dir() {
-            std::fs::remove_dir_all(target).map_err(|e| EnstowError::Io {
-                path: target.to_path_buf(),
-                source: e,
-            })?;
-        } else {
-            std::fs::remove_file(target).map_err(|e| EnstowError::Io {
-                path: target.to_path_buf(),
-                source: e,
-            })?;
-        }
+        remove_target(target, &meta)?;
     }
 
     if let Some(parent) = target.parent() {
@@ -640,6 +862,8 @@ mod tests {
             age_key_file: None,
             packages: Vec::new(),
             ignore: Vec::new(),
+            backup: false,
+            backup_dir: None,
         };
 
         let actions = plan_stow(&args).unwrap();

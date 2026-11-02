@@ -86,6 +86,7 @@ fn test_plan_stow_multiple_packages() {
         age_key_file: None,
         packages: vec!["zsh".to_string(), "nvim".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -117,6 +118,7 @@ fn test_plan_stow_nonexistent_package_fails() {
         age_key_file: None,
         packages: vec!["nonexistent".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let result = plan_stow(&args);
@@ -170,6 +172,7 @@ fn test_multi_package_stow_unstow_status_integration() {
         age_key_file: Some(key_file.clone()),
         packages: vec!["zsh".to_string(), "secrets".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let plan = plan_stow(&args_apply).unwrap();
@@ -196,6 +199,7 @@ fn test_multi_package_stow_unstow_status_integration() {
         age_key_file: None,
         packages: vec!["zsh".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
     let plan_status = plan_stow(&args_status_zsh).unwrap();
     assert_eq!(plan_status.len(), 1);
@@ -213,6 +217,7 @@ fn test_multi_package_stow_unstow_status_integration() {
         age_key_file: None,
         packages: vec!["zsh".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
     let plan_unstow = plan_stow(&args_unstow_zsh).unwrap();
     execute_unstow_plan(&plan_unstow, target_dir.path(), false).unwrap();

@@ -77,6 +77,7 @@ fn test_restow_prunes_removed_dotfile() {
         age_key_file: None,
         packages: vec!["my_pkg".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     // Initial stow
@@ -139,6 +140,7 @@ fn test_restow_prunes_removed_nested_directory() {
         age_key_file: None,
         packages: vec!["app".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let initial_plan = plan_stow(&args).unwrap();
@@ -190,6 +192,7 @@ fn test_restow_dry_run_does_not_modify_disk() {
         age_key_file: None,
         packages: vec!["app".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let initial_plan = plan_stow(&args).unwrap();
@@ -249,6 +252,7 @@ fn test_restow_with_mixed_regular_and_age_files() {
         age_key_file: Some(key_file.clone()),
         packages: vec!["mixed".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     // Initial stow

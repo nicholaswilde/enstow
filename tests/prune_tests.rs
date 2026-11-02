@@ -1,7 +1,7 @@
 use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{resolve_common_args, ConfigFile, ConfigFormat};
-use enstow::stow::{execute_plan, execute_unstow_plan, is_symlink_to, plan_stow, plan_unstow};
+use enstow::stow::{execute_plan, execute_unstow_plan, is_symlink_to, plan_stow};
 use std::fs;
 use std::sync::Mutex;
 use tempfile::tempdir;
@@ -124,6 +124,7 @@ fn test_apply_with_prune_removes_stale_symlinks() {
         age_key_file: None,
         packages: vec!["my_pkg".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     // Initial stow
@@ -177,7 +178,7 @@ fn test_apply_with_prune_dry_run_previews_without_deleting() {
     fs::write(&file1, "1\n").unwrap();
     fs::write(&file2, "2\n").unwrap();
 
-    let target_file1 = target_dir.path().join("live.txt");
+    let _target_file1 = target_dir.path().join("live.txt");
     let target_file2 = target_dir.path().join("stale.txt");
 
     let args = CommonArgs {
@@ -189,6 +190,7 @@ fn test_apply_with_prune_dry_run_previews_without_deleting() {
         age_key_file: None,
         packages: vec!["pkg".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let initial_plan = plan_stow(&args).unwrap();

@@ -256,6 +256,7 @@ recipients = ["recipient_config"]
         age_key_file: Some(PathBuf::from("/from/cli/key")),
         packages: vec!["pkg_cli".to_string()],
         ignore: vec![],
+        ..Default::default()
     };
 
     let resolved_cli = resolve_common_args(&cli_args, Some(&config));
@@ -421,6 +422,136 @@ force: true
     assert_eq!(cfg_toml.force, Some(true));
     assert_eq!(cfg_toml, cfg_yaml);
     assert_eq!(cfg_yaml, cfg_json);
+}
+
+#[test]
+fn test_parse_backup_and_backup_dir() {
+    let toml_str = r#"
+backup = true
+backup_dir = "/custom/backup/dir"
+"#;
+    let cfg_toml = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
+    assert_eq!(cfg_toml.backup, Some(true));
+    assert_eq!(
+        cfg_toml.backup_dir,
+        Some(PathBuf::from("/custom/backup/dir"))
+    );
+
+    let yaml_str = r#"
+backup: false
+backup_dir: /yaml/backup
+"#;
+    let cfg_yaml = ConfigFile::parse(yaml_str, ConfigFormat::Yaml).unwrap();
+    assert_eq!(cfg_yaml.backup, Some(false));
+    assert_eq!(cfg_yaml.backup_dir, Some(PathBuf::from("/yaml/backup")));
+
+    let json_str = r#"{
+  "backup": true,
+  "backup_dir": "/json/backup"
+}"#;
+    let cfg_json = ConfigFile::parse(json_str, ConfigFormat::Json).unwrap();
+    assert_eq!(cfg_json.backup, Some(true));
+    assert_eq!(cfg_json.backup_dir, Some(PathBuf::from("/json/backup")));
+}
+
+#[test]
+fn test_backup_precedence_hierarchy() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let orig_backup = std::env::var("ENSTOW_BACKUP").ok();
+    let orig_backup_dir = std::env::var("ENSTOW_BACKUP_DIR").ok();
+
+    std::env::remove_var("ENSTOW_BACKUP");
+    std::env::remove_var("ENSTOW_BACKUP_DIR");
+
+    let empty_cli = CommonArgs::default();
+
+    // 1. Defaults when nothing is set
+    let resolved = resolve_common_args(&empty_cli, None);
+    assert!(!resolved.backup);
+    assert_eq!(resolved.backup_dir, resolved.target.join(".enstow-backup"));
+
+    // 2. Config file sets backup and backup_dir
+    let toml_str = r#"
+backup = true
+backup_dir = "/from/config/backup"
+"#;
+    let config = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
+    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    assert!(resolved.backup);
+    assert_eq!(resolved.backup_dir, PathBuf::from("/from/config/backup"));
+
+    // 3. Env var overrides config file
+    std::env::set_var("ENSTOW_BACKUP", "false");
+    std::env::set_var("ENSTOW_BACKUP_DIR", "/from/env/backup");
+    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    assert!(!resolved.backup);
+    assert_eq!(resolved.backup_dir, PathBuf::from("/from/env/backup"));
+
+    // 3b. Env var ENSTOW_BACKUP=1 enables backup
+    std::env::set_var("ENSTOW_BACKUP", "1");
+    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    assert!(resolved.backup);
+
+    // 4. CLI flags override env var and config file
+    std::env::set_var("ENSTOW_BACKUP", "0");
+    std::env::set_var("ENSTOW_BACKUP_DIR", "/from/env/backup");
+    let cli_flags = CommonArgs {
+        backup: true,
+        backup_dir: Some(PathBuf::from("/from/cli/backup")),
+        ..Default::default()
+    };
+    let resolved = resolve_common_args(&cli_flags, Some(&config));
+    assert!(resolved.backup);
+    assert_eq!(resolved.backup_dir, PathBuf::from("/from/cli/backup"));
+
+    // Clean up
+    std::env::remove_var("ENSTOW_BACKUP");
+    std::env::remove_var("ENSTOW_BACKUP_DIR");
+    if let Some(v) = orig_backup {
+        std::env::set_var("ENSTOW_BACKUP", v);
+    }
+    if let Some(v) = orig_backup_dir {
+        std::env::set_var("ENSTOW_BACKUP_DIR", v);
+    }
+}
+
+#[test]
+fn test_cli_parsing_backup_flags() {
+    // Top-level CLI short flag -b
+    let cli = Cli::try_parse_from(["enstow", "-b"]).unwrap();
+    assert!(cli.common.backup);
+    assert!(cli.common.backup_dir.is_none());
+
+    // Top-level CLI long flag --backup and --backup-dir
+    let cli = Cli::try_parse_from(["enstow", "--backup", "--backup-dir", "/tmp/backups"]).unwrap();
+    assert!(cli.common.backup);
+    assert_eq!(cli.common.backup_dir, Some(PathBuf::from("/tmp/backups")));
+
+    // Subcommand Apply with -b and --backup-dir
+    let cli = Cli::try_parse_from([
+        "enstow",
+        "apply",
+        "-b",
+        "--backup-dir",
+        "/custom/apply_backup",
+        "zsh",
+    ])
+    .unwrap();
+    if let Some(Commands::Apply(args)) = cli.command {
+        assert!(args.backup);
+        assert_eq!(args.backup_dir, Some(PathBuf::from("/custom/apply_backup")));
+        assert_eq!(args.packages, vec!["zsh".to_string()]);
+    } else {
+        panic!("Expected Commands::Apply");
+    }
+
+    // Subcommand Restow with -b
+    let cli = Cli::try_parse_from(["enstow", "restow", "-b"]).unwrap();
+    if let Some(Commands::Restow(args)) = cli.command {
+        assert!(args.backup);
+    } else {
+        panic!("Expected Commands::Restow");
+    }
 }
 
 #[test]

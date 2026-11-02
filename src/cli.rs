@@ -63,6 +63,14 @@ pub struct CommonArgs {
     #[arg(short, long)]
     pub force: bool,
 
+    /// Backup conflicting target files before overwriting
+    #[arg(short = 'b', long)]
+    pub backup: bool,
+
+    /// Directory to relocate conflicting target files during backup
+    #[arg(long, value_name = "PATH")]
+    pub backup_dir: Option<PathBuf>,
+
     /// Prune stale symlinks for managed packages during apply
     #[arg(long)]
     pub prune: bool,
@@ -87,6 +95,12 @@ impl CommonArgs {
 
     pub fn target_path(&self) -> PathBuf {
         self.target.clone().unwrap_or_else(default_target_dir)
+    }
+
+    pub fn backup_dir_path(&self) -> PathBuf {
+        self.backup_dir
+            .clone()
+            .unwrap_or_else(|| self.target_path().join(".enstow-backup"))
     }
 }
 

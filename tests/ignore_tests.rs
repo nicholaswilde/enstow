@@ -35,6 +35,7 @@ fn test_enstowignore_filters_configured_patterns() {
         age_key_file: None,
         packages: Vec::new(),
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -68,6 +69,7 @@ fn test_stow_local_ignore_fallback() {
         age_key_file: None,
         packages: Vec::new(),
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -99,6 +101,7 @@ fn test_cli_ignore_flag_filters_files() {
         age_key_file: None,
         packages: Vec::new(),
         ignore: vec!["*.bak".to_string(), "*.tmp".to_string()],
+        ..Default::default()
     };
 
     let plan = plan_stow(&args).unwrap();
@@ -136,6 +139,7 @@ fn test_enstow_ignore_env_applies_across_all_packages() {
         age_key_file: None,
         packages: vec!["zsh".to_string(), "git".to_string()],
         ignore: Vec::new(),
+        ..Default::default()
     };
 
     let resolved = resolve_common_args(&cli_args, None).to_common_args();
@@ -185,6 +189,7 @@ fn test_ignore_patterns_additive_and_deduplicated() {
         age_key_file: None,
         packages: Vec::new(),
         ignore: vec!["*.bak".to_string(), "*.tmp".to_string()],
+        ..Default::default()
     };
 
     let resolved = resolve_common_args(&cli_args, Some(&config));
