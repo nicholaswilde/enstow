@@ -32,7 +32,7 @@
 # Preferred editor for `enstow edit` (defaults to $ENSTOW_EDITOR, $VISUAL, $EDITOR, or "nano")
 # editor = "nvim"
 
-# Additional ignore patterns (matched via glob against relative paths)
+# Additional ignore patterns ($ENSTOW_IGNORE or -i / --ignore, matched via glob against relative paths)
 # ignore = [
 #     "*.tmp",
 #     ".DS_Store",

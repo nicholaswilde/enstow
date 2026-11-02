@@ -20,7 +20,7 @@ Secret-aware dotfile manager combining GNU `stow` symlinking with `sops` and `ag
 - **Unstow & Restow**: Unlink managed dotfiles cleanly or restow packages to prune stale links and re-apply in one step.
 - **Status Reporting**: Inspect synced, missing, conflicting, modified (drifted), and unverified dotfiles with optional JSON output.
 - **Secret Encryption & Editing**: Encrypt dotfiles to `.age` files and interactively edit them in `$EDITOR` with automatic in-memory re-encryption.
-- **Ignore Rules**: Filters files using `.enstowignore` or `.stow-local-ignore`.
+- **Ignore Rules**: Filters files using `.enstowignore`, `.stow-local-ignore`, `--ignore` / `-i` CLI flags, or `ENSTOW_IGNORE` environment variable.
 - **Dry-run Mode**: Previews all symlink and decryption operations before making changes.
 
 ---
@@ -119,6 +119,19 @@ enstow edit secret.env.age --age-key-file ~/.config/sops/age/keys.txt
 enstow edit secret.env.age --editor "nano"
 ```
 
+### Ignore Patterns
+
+Ignore specific files or patterns during dotfile operations using CLI flags, environment variables, or config files:
+
+```bash
+# Ignore patterns via CLI flags
+enstow apply -i "*.bak" -i "*.tmp"
+
+# Ignore patterns via environment variable (comma or colon separated)
+export ENSTOW_IGNORE="*.bak,*.tmp:*.swp"
+enstow apply
+```
+
 ### Configuration File
 
 `enstow` supports configuration files in TOML, YAML, or JSON. By default, it looks for `$XDG_CONFIG_HOME/enstow/config.{toml,yaml,yml,json}` (fallback `~/.config/enstow/...`). Pass `--config <path>` / `-C <path>` or set `ENSTOW_CONFIG` to override.
@@ -127,10 +140,12 @@ See [assets/config.example.toml](assets/config.example.toml) for an example temp
 
 **Precedence Order:**
 
-1. CLI Arguments (`--source`, `--target`, `--dry-run`, `--force`, `--age-key-file`, `--recipient`, `--editor`)
-2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `ENSTOW_DRY_RUN`, `ENSTOW_FORCE`, `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`, `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS`, `ENSTOW_PACKAGES`, `ENSTOW_EDITOR` / `VISUAL` / `EDITOR`)
+1. CLI Arguments (`--source`, `--target`, `--dry-run`, `--force`, `--age-key-file`, `--recipient`, `--editor`, `--ignore` / `-i`)
+2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `ENSTOW_DRY_RUN`, `ENSTOW_FORCE`, `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`, `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS`, `ENSTOW_PACKAGES`, `ENSTOW_IGNORE`, `ENSTOW_EDITOR` / `VISUAL` / `EDITOR`)
 3. Configuration File (`config.{toml,yaml,json}`)
 4. Built-in Defaults
+
+*Note: Ignore patterns from CLI arguments, `ENSTOW_IGNORE`, and configuration files merge additively without duplicates.*
 
 ---
 

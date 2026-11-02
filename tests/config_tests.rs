@@ -1,11 +1,15 @@
-use enstow::cli::CommonArgs;
+use clap::Parser;
+use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{
-    load_config, resolve_age_key_file, resolve_common_args, resolve_editor, resolve_recipients,
-    ConfigFile, ConfigFormat,
+    load_config, resolve_age_key_file, resolve_common_args, resolve_editor,
+    resolve_ignore_patterns, resolve_recipients, ConfigFile, ConfigFormat,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_config_format_from_path() {
@@ -108,6 +112,7 @@ recipients = "age1singlekey"
 
 #[test]
 fn test_default_config_discovery() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let temp = tempdir().unwrap();
     let xdg_dir = temp.path().join("xdg");
     let enstow_dir = xdg_dir.join("enstow");
@@ -128,6 +133,7 @@ fn test_default_config_discovery() {
 
 #[test]
 fn test_explicit_config_override() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let temp = tempdir().unwrap();
     let custom_config = temp.path().join("custom.json");
     fs::write(&custom_config, r#"{"source": "/from/custom/json"}"#).unwrap();
@@ -149,6 +155,7 @@ fn test_explicit_config_override() {
 
 #[test]
 fn test_precedence_hierarchy() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let orig_age_key = std::env::var("SOPS_AGE_KEY_FILE").ok();
     let orig_source = std::env::var("ENSTOW_SOURCE").ok();
     let orig_target = std::env::var("ENSTOW_TARGET").ok();
@@ -291,6 +298,7 @@ recipients = ["recipient_config"]
 
 #[test]
 fn test_enstow_env_aliases_precedence() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let orig_enstow_age_key = std::env::var("ENSTOW_AGE_KEY_FILE").ok();
     let orig_sops_age_key = std::env::var("SOPS_AGE_KEY_FILE").ok();
     let orig_enstow_recipients = std::env::var("ENSTOW_RECIPIENTS").ok();
@@ -407,6 +415,7 @@ force: true
 
 #[test]
 fn test_dry_run_and_force_precedence_hierarchy() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let orig_dry_run = std::env::var("ENSTOW_DRY_RUN").ok();
     let orig_force = std::env::var("ENSTOW_FORCE").ok();
 
@@ -470,5 +479,113 @@ force = false
     }
     if let Some(v) = orig_force {
         std::env::set_var("ENSTOW_FORCE", v);
+    }
+}
+
+#[test]
+fn test_cli_parsing_ignore_flags() {
+    // 1. Root apply / default command
+    let cli = Cli::try_parse_from(["enstow", "-i", "*.bak", "--ignore", "*.tmp"]).unwrap();
+    assert_eq!(
+        cli.common.ignore,
+        vec!["*.bak".to_string(), "*.tmp".to_string()]
+    );
+
+    // 2. Explicit apply subcommand
+    let cli = Cli::try_parse_from(["enstow", "apply", "-i", "*.bak", "-i", "*.tmp"]).unwrap();
+    match cli.command {
+        Some(Commands::Apply(args)) => {
+            assert_eq!(args.ignore, vec!["*.bak".to_string(), "*.tmp".to_string()]);
+        }
+        _ => panic!("Expected Commands::Apply"),
+    }
+
+    // 3. Restow subcommand
+    let cli = Cli::try_parse_from(["enstow", "restow", "-i", "*.bak"]).unwrap();
+    match cli.command {
+        Some(Commands::Restow(args)) => {
+            assert_eq!(args.ignore, vec!["*.bak".to_string()]);
+        }
+        _ => panic!("Expected Commands::Restow"),
+    }
+
+    // 4. Unstow subcommand
+    let cli = Cli::try_parse_from(["enstow", "unstow", "-i", "*.bak"]).unwrap();
+    match cli.command {
+        Some(Commands::Unstow(args)) => {
+            assert_eq!(args.ignore, vec!["*.bak".to_string()]);
+        }
+        _ => panic!("Expected Commands::Unstow"),
+    }
+
+    // 5. Status subcommand
+    let cli = Cli::try_parse_from(["enstow", "status", "-i", "*.bak"]).unwrap();
+    match cli.command {
+        Some(Commands::Status { common, .. }) => {
+            assert_eq!(common.ignore, vec!["*.bak".to_string()]);
+        }
+        _ => panic!("Expected Commands::Status"),
+    }
+}
+
+#[test]
+fn test_resolve_ignore_patterns() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let orig_ignore = std::env::var("ENSTOW_IGNORE").ok();
+    std::env::remove_var("ENSTOW_IGNORE");
+
+    // 1. Empty everywhere
+    assert_eq!(resolve_ignore_patterns(&[], None), Vec::<String>::new());
+
+    // 2. CLI flags alone
+    let cli = vec!["*.bak".to_string(), "*.tmp".to_string()];
+    assert_eq!(
+        resolve_ignore_patterns(&cli, None),
+        vec!["*.bak".to_string(), "*.tmp".to_string()]
+    );
+
+    // 3. ENSTOW_IGNORE alone (comma-separated and colon-separated)
+    std::env::set_var("ENSTOW_IGNORE", "*.bak,*.tmp:*.swp");
+    assert_eq!(
+        resolve_ignore_patterns(&[], None),
+        vec![
+            "*.bak".to_string(),
+            "*.tmp".to_string(),
+            "*.swp".to_string()
+        ]
+    );
+
+    // 4. Config file alone
+    std::env::remove_var("ENSTOW_IGNORE");
+    let cfg = ConfigFile {
+        ignore: Some(vec!["*.cfg_ignore".to_string()]),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_ignore_patterns(&[], Some(&cfg)),
+        vec!["*.cfg_ignore".to_string()]
+    );
+
+    // 5. Additive merge with deduplication across CLI, ENSTOW_IGNORE, and Config
+    let cli = vec!["*.bak".to_string(), "*.tmp".to_string()];
+    std::env::set_var("ENSTOW_IGNORE", " *.tmp, *.log : *.swp ");
+    let cfg = ConfigFile {
+        ignore: Some(vec!["*.swp".to_string(), "*.cache".to_string()]),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_ignore_patterns(&cli, Some(&cfg)),
+        vec![
+            "*.bak".to_string(),
+            "*.tmp".to_string(),
+            "*.log".to_string(),
+            "*.swp".to_string(),
+            "*.cache".to_string()
+        ]
+    );
+
+    std::env::remove_var("ENSTOW_IGNORE");
+    if let Some(v) = orig_ignore {
+        std::env::set_var("ENSTOW_IGNORE", v);
     }
 }

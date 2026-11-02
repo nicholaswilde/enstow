@@ -280,11 +280,8 @@ pub fn resolve_common_args(
         config.and_then(|c| c.packages.clone()).unwrap_or_default()
     };
 
-    // 5. Additional ignore patterns: from CLI and Config
-    let mut ignore = cli_args.ignore.clone();
-    if let Some(cfg_ignore) = config.and_then(|c| c.ignore.clone()) {
-        ignore.extend(cfg_ignore);
-    }
+    // 5. Additional ignore patterns: from CLI, ENSTOW_IGNORE, and Config
+    let ignore = resolve_ignore_patterns(&cli_args.ignore, config);
 
     // 6. Dry run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
     let dry_run = if cli_args.dry_run {
@@ -424,4 +421,39 @@ pub fn resolve_age_key_file(
     }
 
     config.and_then(|c| c.age_key_file.clone())
+}
+
+/// Resolve ignore patterns additively across CLI args, ENSTOW_IGNORE environment variable,
+/// and configuration file, removing duplicates while preserving precedence order.
+pub fn resolve_ignore_patterns(cli_ignore: &[String], config: Option<&ConfigFile>) -> Vec<String> {
+    let mut result = Vec::new();
+
+    let mut add_patterns = |patterns: &[String]| {
+        for p in patterns {
+            let trimmed = p.trim();
+            if !trimmed.is_empty() && !result.iter().any(|existing: &String| existing == trimmed) {
+                result.push(trimmed.to_string());
+            }
+        }
+    };
+
+    // 1. CLI arguments
+    add_patterns(cli_ignore);
+
+    // 2. ENSTOW_IGNORE environment variable (comma or colon separated)
+    if let Ok(env_ignore) = std::env::var("ENSTOW_IGNORE") {
+        let env_patterns: Vec<String> = env_ignore
+            .split([',', ':'])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        add_patterns(&env_patterns);
+    }
+
+    // 3. Configuration file
+    if let Some(cfg_ignore) = config.and_then(|c| c.ignore.as_ref()) {
+        add_patterns(cfg_ignore);
+    }
+
+    result
 }

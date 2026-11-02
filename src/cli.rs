@@ -47,8 +47,8 @@ pub struct CommonArgs {
     #[arg(value_name = "PACKAGES")]
     pub packages: Vec<String>,
 
-    /// Additional ignore patterns from config
-    #[arg(skip)]
+    /// Additional pattern to ignore (can be specified multiple times)
+    #[arg(short, long, value_name = "PATTERN")]
     pub ignore: Vec<String>,
 }
 
