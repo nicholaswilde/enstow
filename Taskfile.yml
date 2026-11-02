@@ -77,6 +77,16 @@ tasks:
       - mkdir -p assets
       - cargo run -- man > assets/enstow.1
 
+  completions:
+    desc: Generate shell completions for bash, zsh, fish, powershell, and elvish
+    cmds:
+      - mkdir -p completions
+      - cargo run -- completions bash > completions/enstow.bash
+      - cargo run -- completions zsh > completions/_enstow
+      - cargo run -- completions fish > completions/enstow.fish
+      - cargo run -- completions powershell > completions/_enstow.ps1
+      - cargo run -- completions elvish > completions/enstow.elv
+
   check:
     desc: Check code for errors without generating binary
     cmds:

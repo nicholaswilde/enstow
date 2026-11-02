@@ -1,8 +1,12 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use enstow::cli::{Cli, Commands};
 use enstow::stow;
 
 fn main() -> anyhow::Result<()> {
+    clap_complete::CompleteEnv::with_factory(Cli::command)
+        .completer("enstow")
+        .complete();
+
     let cli = Cli::parse();
     let config = enstow::config::load_config(cli.config.as_deref())?.map(|(_, cfg)| cfg);
     let log_level = enstow::config::resolve_log_level(
@@ -131,6 +135,17 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Man) => {
             let mut stdout = std::io::stdout().lock();
             enstow::cli::generate_manpage(&mut stdout)?;
+        }
+        Some(Commands::Completions {
+            shell,
+            static_completions,
+        }) => {
+            let mut stdout = std::io::stdout().lock();
+            if static_completions {
+                enstow::cli::generate_static_completions(shell, &mut stdout);
+            } else {
+                enstow::cli::generate_completions(shell, &mut stdout);
+            }
         }
         None => {
             // Default to applying with root common args

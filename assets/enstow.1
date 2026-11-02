@@ -4,7 +4,7 @@
 .SH NAME
 enstow \- Secret\-aware dotfile manager combining stow symlinking with sops/age decryption
 .SH SYNOPSIS
-\fBenstow\fR [\fB\-C\fR|\fB\-\-config\fR] [\fB\-\-log\-level\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR]... [\fB\-s\fR|\fB\-\-source\fR] [\fB\-t\fR|\fB\-\-target\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-age\-key\-file\fR] [\fB\-i\fR|\fB\-\-ignore\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPACKAGES\fR] [\fIsubcommands\fR]
+\fBenstow\fR [\fB\-C\fR|\fB\-\-config\fR] [\fB\-\-log\-level\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR]... [\fB\-s\fR|\fB\-\-source\fR] [\fB\-t\fR|\fB\-\-target\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-b\fR|\fB\-\-backup\fR] [\fB\-\-backup\-dir\fR] [\fB\-\-prune\fR] [\fB\-\-age\-key\-file\fR] [\fB\-i\fR|\fB\-\-ignore\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPACKAGES\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 Secret\-aware dotfile manager combining stow symlinking with sops/age decryption
 .SH OPTIONS
@@ -32,6 +32,15 @@ Preview actions without writing changes to disk
 .TP
 \fB\-f\fR, \fB\-\-force\fR
 Overwrite existing target files or differing symlinks
+.TP
+\fB\-b\fR, \fB\-\-backup\fR
+Backup conflicting target files before overwriting
+.TP
+\fB\-\-backup\-dir\fR \fI<PATH>\fR
+Directory to relocate conflicting target files during backup
+.TP
+\fB\-\-prune\fR
+Prune stale symlinks for managed packages during apply
 .TP
 \fB\-\-age\-key\-file\fR \fI<AGE_KEY_FILE>\fR
 Explicit path to age identity key file
@@ -69,6 +78,9 @@ Show status of dotfiles and symlinks
 .TP
 enstow\-man(1)
 Generate UNIX roff man page
+.TP
+enstow\-completions(1)
+Generate shell completions
 .TP
 enstow\-help(1)
 Print this message or the help of the given subcommand(s)

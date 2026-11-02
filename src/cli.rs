@@ -1,4 +1,5 @@
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::env::EnvCompleter;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -157,6 +158,14 @@ pub enum Commands {
     },
     /// Generate UNIX roff man page
     Man,
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+        /// Generate static autocompletions script instead of dynamic
+        #[arg(long = "static")]
+        static_completions: bool,
+    },
 }
 
 pub fn default_target_dir() -> PathBuf {
@@ -170,4 +179,40 @@ pub fn generate_manpage(writer: &mut dyn Write) -> anyhow::Result<()> {
     let man = clap_mangen::Man::new(cmd);
     man.render(writer)
         .map_err(|e| anyhow::anyhow!("Failed rendering man page: {e}"))
+}
+
+/// Generate dynamic registration completion script for the requested shell.
+pub fn generate_dynamic_completions(
+    shell: clap_complete::Shell,
+    writer: &mut dyn Write,
+) -> std::io::Result<()> {
+    match shell {
+        clap_complete::Shell::Bash => clap_complete::env::Bash
+            .write_registration("COMPLETE", "enstow", "enstow", "enstow", writer),
+        clap_complete::Shell::Zsh => clap_complete::env::Zsh
+            .write_registration("COMPLETE", "enstow", "enstow", "enstow", writer),
+        clap_complete::Shell::Fish => clap_complete::env::Fish
+            .write_registration("COMPLETE", "enstow", "enstow", "enstow", writer),
+        clap_complete::Shell::PowerShell => clap_complete::env::Powershell
+            .write_registration("COMPLETE", "enstow", "enstow", "enstow", writer),
+        clap_complete::Shell::Elvish => clap_complete::env::Elvish
+            .write_registration("COMPLETE", "enstow", "enstow", "enstow", writer),
+        _ => Err(std::io::Error::other(format!(
+            "Unsupported shell for dynamic completions: {shell}"
+        ))),
+    }
+}
+
+/// Generate static completion script for the requested shell.
+pub fn generate_static_completions(shell: clap_complete::Shell, writer: &mut dyn Write) {
+    let mut cmd = Cli::command();
+    let bin_name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, bin_name, writer);
+}
+
+/// Generate shell completions, attempting dynamic registration first and falling back to static generation.
+pub fn generate_completions(shell: clap_complete::Shell, writer: &mut dyn Write) {
+    if generate_dynamic_completions(shell, writer).is_err() {
+        generate_static_completions(shell, writer);
+    }
 }
