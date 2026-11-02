@@ -8,6 +8,12 @@
 # Default target directory where dotfiles are deployed (defaults to $HOME)
 # target = "~"
 
+# Preview actions without writing changes to disk ($ENSTOW_DRY_RUN)
+# dry_run = false
+
+# Overwrite existing target files or differing symlinks ($ENSTOW_FORCE)
+# force = false
+
 # Path to age identity key file for secret decryption and encryption ($ENSTOW_AGE_KEY_FILE or $SOPS_AGE_KEY_FILE)
 # age_key_file = "~/.config/sops/age/keys.txt"
 

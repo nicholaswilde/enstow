@@ -1,6 +1,8 @@
 # :package: enstow :lock:
 
+[![Coveralls](https://img.shields.io/coveralls/github/nicholaswilde/enstow/main?style=for-the-badge&logo=coveralls)](https://coveralls.io/github/nicholaswilde/enstow?branch=main)
 [![task](https://img.shields.io/badge/Task-Enabled-brightgreen?style=for-the-badge&logo=task&logoColor=white)](https://taskfile.dev/#/)
+<!-- [![ci](https://img.shields.io/github/actions/workflow/status/nicholaswilde/tfa/ci.yml?label=ci&style=for-the-badge&branch=main&logo=github-actions)](https://github.com/nicholaswilde/tfa/actions/workflows/ci.yml) -->
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
 
 Secret-aware dotfile manager combining GNU `stow` symlinking with `sops` and `age` decryption.
@@ -125,8 +127,8 @@ See [assets/config.example.toml](assets/config.example.toml) for an example temp
 
 **Precedence Order:**
 
-1. CLI Arguments (`--source`, `--target`, `--age-key-file`, `--recipient`, `--editor`)
-2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`, `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS`, `ENSTOW_EDITOR` / `VISUAL` / `EDITOR`)
+1. CLI Arguments (`--source`, `--target`, `--dry-run`, `--force`, `--age-key-file`, `--recipient`, `--editor`)
+2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `ENSTOW_DRY_RUN`, `ENSTOW_FORCE`, `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`, `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS`, `ENSTOW_PACKAGES`, `ENSTOW_EDITOR` / `VISUAL` / `EDITOR`)
 3. Configuration File (`config.{toml,yaml,json}`)
 4. Built-in Defaults
 

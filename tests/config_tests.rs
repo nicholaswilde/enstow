@@ -379,3 +379,96 @@ fn test_enstow_env_aliases_precedence() {
         std::env::set_var("EDITOR", v);
     }
 }
+
+#[test]
+fn test_parse_dry_run_and_force() {
+    let toml_str = r#"
+dry_run = true
+force = true
+"#;
+    let yaml_str = r#"
+dry_run: true
+force: true
+"#;
+    let json_str = r#"{
+  "dry_run": true,
+  "force": true
+}"#;
+
+    let cfg_toml = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
+    let cfg_yaml = ConfigFile::parse(yaml_str, ConfigFormat::Yaml).unwrap();
+    let cfg_json = ConfigFile::parse(json_str, ConfigFormat::Json).unwrap();
+
+    assert_eq!(cfg_toml.dry_run, Some(true));
+    assert_eq!(cfg_toml.force, Some(true));
+    assert_eq!(cfg_toml, cfg_yaml);
+    assert_eq!(cfg_yaml, cfg_json);
+}
+
+#[test]
+fn test_dry_run_and_force_precedence_hierarchy() {
+    let orig_dry_run = std::env::var("ENSTOW_DRY_RUN").ok();
+    let orig_force = std::env::var("ENSTOW_FORCE").ok();
+
+    std::env::remove_var("ENSTOW_DRY_RUN");
+    std::env::remove_var("ENSTOW_FORCE");
+
+    let empty_cli = CommonArgs::default();
+
+    // 1. Defaults are false when nothing is set
+    let resolved = resolve_common_args(&empty_cli, None);
+    assert!(!resolved.dry_run);
+    assert!(!resolved.force);
+
+    // 2. Config file sets dry_run = true, force = true
+    let toml_str = r#"
+dry_run = true
+force = true
+"#;
+    let config = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
+    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    assert!(resolved.dry_run);
+    assert!(resolved.force);
+
+    // 3. Env var overrides config file:
+    // 3a. Env disables dry_run and force with "0" / "false"
+    std::env::set_var("ENSTOW_DRY_RUN", "0");
+    std::env::set_var("ENSTOW_FORCE", "false");
+    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    assert!(!resolved.dry_run);
+    assert!(!resolved.force);
+
+    // 3b. Env enables dry_run and force with "1" / "true" over config false
+    let toml_false = r#"
+dry_run = false
+force = false
+"#;
+    let config_false = ConfigFile::parse(toml_false, ConfigFormat::Toml).unwrap();
+    std::env::set_var("ENSTOW_DRY_RUN", "1");
+    std::env::set_var("ENSTOW_FORCE", "true");
+    let resolved = resolve_common_args(&empty_cli, Some(&config_false));
+    assert!(resolved.dry_run);
+    assert!(resolved.force);
+
+    // 4. CLI flags override env var and config file
+    std::env::set_var("ENSTOW_DRY_RUN", "0");
+    std::env::set_var("ENSTOW_FORCE", "0");
+    let cli_flags = CommonArgs {
+        dry_run: true,
+        force: true,
+        ..Default::default()
+    };
+    let resolved = resolve_common_args(&cli_flags, Some(&config_false));
+    assert!(resolved.dry_run);
+    assert!(resolved.force);
+
+    // Clean up
+    std::env::remove_var("ENSTOW_DRY_RUN");
+    std::env::remove_var("ENSTOW_FORCE");
+    if let Some(v) = orig_dry_run {
+        std::env::set_var("ENSTOW_DRY_RUN", v);
+    }
+    if let Some(v) = orig_force {
+        std::env::set_var("ENSTOW_FORCE", v);
+    }
+}

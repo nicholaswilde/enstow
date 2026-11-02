@@ -56,6 +56,8 @@ impl RecipientsConfig {
 pub struct ConfigFile {
     pub source: Option<PathBuf>,
     pub target: Option<PathBuf>,
+    pub dry_run: Option<bool>,
+    pub force: Option<bool>,
     pub age_key_file: Option<PathBuf>,
     pub recipients: Option<RecipientsConfig>,
     pub packages: Option<Vec<String>>,
@@ -284,14 +286,45 @@ pub fn resolve_common_args(
         ignore.extend(cfg_ignore);
     }
 
+    // 6. Dry run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
+    let dry_run = if cli_args.dry_run {
+        true
+    } else if let Some(env_dry_run) = parse_bool_env("ENSTOW_DRY_RUN") {
+        env_dry_run
+    } else {
+        config.and_then(|c| c.dry_run).unwrap_or_default()
+    };
+
+    // 7. Force precedence: CLI (-f / --force) > ENSTOW_FORCE > Config > Default (false)
+    let force = if cli_args.force {
+        true
+    } else if let Some(env_force) = parse_bool_env("ENSTOW_FORCE") {
+        env_force
+    } else {
+        config.and_then(|c| c.force).unwrap_or_default()
+    };
+
     ResolvedCommonArgs {
         source,
         target,
-        dry_run: cli_args.dry_run,
-        force: cli_args.force,
+        dry_run,
+        force,
         age_key_file,
         packages,
         ignore,
+    }
+}
+
+/// Parse a boolean value from an environment variable ("1", "true", "0", "false").
+pub fn parse_bool_env(var: &str) -> Option<bool> {
+    let val = std::env::var(var).ok()?;
+    let trimmed = val.trim();
+    if trimmed.eq_ignore_ascii_case("1") || trimmed.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if trimmed.eq_ignore_ascii_case("0") || trimmed.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
     }
 }
 
