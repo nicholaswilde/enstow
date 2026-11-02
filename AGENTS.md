@@ -11,6 +11,10 @@ Conventions and architecture for AI agents working on `enstow`.
 - **GitHub CLI**: Prefix `gh` commands with `rtk` and pipe to `cat` (e.g., `rtk gh issue list | cat`, `rtk gh pr status | cat`). Always pipe to bypass interactive pagers.
 - **File & Directory Inspection**: Use `rtk ls`, `rtk tree`, `rtk find`, or `rtk read` when listing or reading files for token-optimized output.
 - **Searching**: Use `rtk rg` or `rg` (ripgrep) for line search pattern matching to save tokens.
+- **Spellchecking**: Run `rtk typos --format brief`; `--format brief` strips visual code context blocks to conserve tokens.
+- **Link Checking**: Run `rtk lychee --no-progress [optional: --offline] <target>`; always pass `--no-progress` to suppress terminal escape sequences, and `--offline` when validating local file links.
+- **TOML Operations**: Prefix `taplo` commands with `rtk` (e.g., `rtk taplo fmt`, `rtk taplo lint`, `rtk taplo check`).
+- **Markdown Operations**: Prefix `rumdl` commands with `rtk` (e.g., `rtk rumdl check .`, `rtk rumdl fmt .`).
 - **Build & Test Outputs**: Use `rtk err` or `rtk test` when running build/test commands to filter output to errors/failures only (e.g., `rtk test cargo test`).
 - **Exceptions**: Inside `ctx_execute` / `ctx_batch_execute` sandbox code, skip `rtk` (only printed output enters context). Drop `rtk` when exact raw bytes or patch required (`git diff` patch).
 <!-- rtk-end -->
@@ -113,8 +117,9 @@ Use Headroom (`headroom`) MCP tools to manage context window consumption on larg
 <!-- taplo-rules-begin -->
 ## Taplo TOML Rules
 
-- **Format**: Run `taplo fmt` to format TOML files in-place (`Cargo.toml`).
-- **Validation**: Run `taplo lint` to validate TOML syntax and schema.
+- **Prefix with RTK**: Always prefix `taplo` commands with `rtk` in interactive shells (e.g., `rtk taplo fmt`, `rtk taplo lint`).
+- **Format**: Run `rtk taplo fmt` to format TOML files in-place (`Cargo.toml`).
+- **Validation**: Run `rtk taplo lint` to validate TOML syntax and schema.
 <!-- taplo-rules-end -->
 
 <!-- issue-management-begin -->
