@@ -1,0 +1,637 @@
+# enstow
+
+> A secret-aware dotfile manager combining GNU stow symlinking with seamless sops and age decryption.
+
+enstow manages modular dotfile packages across platforms with native symlink tracking and in-memory decryption for secret files (e.g., .age and .sops.yaml). Plaintext secret targets are written with strict permissions (0600) without ever storing plaintext secrets in version control.
+
+## Table of Contents
+
+- [Architecture & Directory Layout](#architecture--directory-layout)
+- [Installation & Prerequisites](#installation--prerequisites)
+- [CLI Usage & Subcommands](#cli-usage--subcommands)
+  - [Global Options & Common Arguments](#global-options--common-arguments)
+  - [apply](#apply)
+  - [restow](#restow)
+  - [unstow](#unstow)
+  - [status](#status)
+  - [encrypt](#encrypt)
+  - [edit](#edit)
+  - [completions](#completions)
+  - [man](#man)
+- [Conflict Resolution, Backups & Pruning](#conflict-resolution-backups--pruning)
+- [Secret Management & Encryption](#secret-management--encryption)
+  - [Detection Patterns & Destination Mapping](#detection-patterns--destination-mapping)
+  - [Permissions & Memory Safety](#permissions--memory-safety)
+  - [Age Recipient Resolution](#age-recipient-resolution)
+- [Ignore Rules & Patterns](#ignore-rules--patterns)
+- [Configuration & Precedence](#configuration--precedence)
+  - [Hierarchical Precedence Order](#hierarchical-precedence-order)
+  - [Configuration File Schema](#configuration-file-schema)
+- [Environment Variables Reference](#environment-variables-reference)
+- [Core Rust Modules & Internal Architecture](#core-rust-modules--internal-architecture)
+  - [src/lib.rs](#srclibrs)
+  - [src/cli.rs](#srcclirs)
+  - [src/stow.rs](#srcstowrs)
+  - [src/crypto.rs](#srccryptors)
+  - [src/config.rs](#srcconfigrs)
+  - [src/error.rs](#srcerrorrs)
+  - [src/main.rs](#srcmainrs)
+- [Development, Testing & Quality Gates](#development-testing--quality-gates)
+- [License & Maintainer Information](#license--maintainer-information)
+
+---
+
+## Architecture & Directory Layout
+
+`enstow` is implemented in Rust (2021 edition) as a single static binary. It is structured around modular packages inside a dotfiles repository:
+
+```text
+dotfiles/
+├── .enstowignore             # Global ignore patterns
+├── zsh/
+│   ├── .zshrc               # Regular file -> symlinked to ~/.zshrc
+│   └── .zshrc.local.age     # Encrypted secret -> decrypted to ~/.zshrc.local (mode 0600)
+├── nvim/
+│   └── .config/
+│       └── nvim/
+│           └── init.lua     # Symlinked to ~/.config/nvim/init.lua
+└── git/
+    └── .gitconfig           # Symlinked to ~/.gitconfig
+```
+
+### Repository Layout
+
+- `src/`: Core library and CLI binary implementation.
+  - `src/lib.rs`: Library root exposing modules.
+  - `src/main.rs`: CLI executable entry point.
+  - `src/cli.rs`: Command line parsing using `clap` (derive API) and shell completions generator.
+  - `src/stow.rs`: Traversal, file action planning (`FileAction`), symlink operations, collision handling, and status auditing.
+  - `src/crypto.rs`: Secret type detection, in-memory decryption (`age` crate and `sops` CLI), encryption, and atomic secure file writes (`0600`).
+  - `src/config.rs`: Multi-format configuration loader (TOML, YAML, JSON) with precedence resolution.
+  - `src/error.rs`: Domain errors categorized via `thiserror`.
+- `tests/`: Integration test suite covering CLI dispatch, stow, unstow, restow, prune, collisions, ignore rules, crypto, status, completions, and configuration.
+- `assets/`: UNIX roff manual page (`enstow.1`) and sample configuration file (`config.example.toml`).
+- `completions/`: Generated shell completion scripts for Bash, Zsh, Fish, PowerShell, and Elvish.
+- `Taskfile.yml`: Task automation definitions for cross-compilation, test coverage, formatting, and linting.
+
+---
+
+## Installation & Prerequisites
+
+### Prerequisites
+
+- **Runtime:**
+  - `age` / `rage` (optional CLI; `age` Rust crate is compiled into the binary).
+  - `sops` CLI (optional; required only if `.sops.yaml` / `.sops.*` encrypted files are used).
+- **Build from Source:**
+  - Rust 1.75+ toolchain (`cargo`, `rustc`).
+
+### Installation Methods
+
+#### Homebrew
+
+```bash
+brew tap nicholaswilde/tap
+brew install nicholaswilde/tap/enstow
+```
+
+#### Build Locally
+
+```bash
+git clone https://github.com/nicholaswilde/enstow.git
+cd enstow
+cargo build --release
+cp target/release/enstow /usr/local/bin/
+```
+
+#### Via Task
+
+```bash
+task build:local
+```
+
+---
+
+## CLI Usage & Subcommands
+
+```text
+enstow [OPTIONS] [COMMAND]
+```
+
+When run without a subcommand (`enstow`), it defaults to executing the `apply` command with common arguments.
+
+### Global Options & Common Arguments
+
+#### Global Options
+
+- `-C, --config <PATH>`: Explicit path to configuration file (TOML, YAML, or JSON). Can also be set with `ENSTOW_CONFIG`.
+- `--log-level <LEVEL>`: Log level filter (`trace`, `debug`, `info`, `warn`, `error`, `off`).
+- `-v, --verbose`: Verbose output (`-v` for debug, `-vv` for trace). Conflicts with `--quiet`.
+- `-q, --quiet`: Quiet output (`-q` for warn, `-qq` for error). Conflicts with `--verbose`.
+- `-h, --help`: Print help.
+- `-V, --version`: Print version.
+
+#### Common Arguments (shared across `apply`, `restow`, `unstow`, `status`)
+
+- `-s, --source <PATH>`: Source directory containing dotfiles (defaults to `.` or config/env).
+- `-t, --target <PATH>`: Target directory where dotfiles are applied (defaults to `$HOME`).
+- `-n, --dry-run`: Preview actions without modifying the filesystem.
+- `-f, --force`: Overwrite existing files or conflicting symlinks.
+- `-b, --backup`: Relocate conflicting files to a backup directory instead of aborting or unlinking.
+- `--backup-dir <PATH>`: Destination directory for conflicting files (defaults to `<target>/.enstow-backup`).
+- `--prune`: Remove stale symlinks pointing to nonexistent source files within managed packages.
+- `--age-key-file <PATH>`: Explicit path to age identity key file (`$ENSTOW_AGE_KEY_FILE` or `$SOPS_AGE_KEY_FILE`).
+- `-i, --ignore <PATTERN>`: Additional ignore pattern (can be specified multiple times).
+- `[PACKAGES...]`: Specific packages to manage (e.g. `zsh nvim git`). If omitted, all subdirectories or configured packages are processed.
+
+### Subcommands
+
+### apply
+
+Symlinks non-secret files and decrypts secret files into target directories.
+
+```bash
+# Apply all packages from ~/dotfiles into $HOME
+enstow apply --source ~/dotfiles
+
+# Apply specific packages in dry-run mode
+enstow apply --source ~/dotfiles --dry-run zsh nvim
+
+# Apply with automatic backup of conflicts
+enstow apply --source ~/dotfiles --backup zsh
+```
+
+### restow
+
+Combines pruning stale symlinks/secrets with re-applying packages in a single command. Equivalent to running `enstow unstow` on stale files followed by `enstow apply`.
+
+```bash
+# Restow all packages
+enstow restow --source ~/dotfiles
+
+# Restow specific packages
+enstow restow --source ~/dotfiles zsh nvim
+```
+
+### unstow
+
+Removes symlinks pointing into the dotfile repository and removes decrypted plaintext secret targets. Unstow safely verifies symlink targets before removing them to avoid deleting unmanaged files.
+
+```bash
+# Unstow all packages
+enstow unstow --source ~/dotfiles
+
+# Unstow specific packages
+enstow unstow --source ~/dotfiles zsh
+```
+
+### status
+
+Audits managed dotfiles, comparing source files against target locations. Reports sync state and detects configuration drift.
+
+```bash
+# Human-readable status overview
+enstow status
+
+# JSON formatted status output
+enstow status --json
+
+# Check status with explicit age key to verify encrypted secrets
+enstow status --age-key-file ~/.config/sops/age/keys.txt
+```
+
+#### Status States Reported
+
+- `SYNCED`: Symlink points to valid source, or decrypted plaintext in destination matches source secret.
+- `MISSING`: Source file exists in dotfiles, but target file has not been deployed.
+- `CONFLICT`: Target destination contains an unmanaged file, incorrect symlink, or directory blocking deployment.
+- `MODIFIED`: Target secret file exists, but plaintext contents have drifted from the encrypted source.
+- `UNVERIFIED`: Target secret file exists, but cannot be decrypted for verification due to missing age keys.
+
+### encrypt
+
+Encrypts a plaintext dotfile into `.age` format using specified recipient keys or keys extracted from an age identity file.
+
+```bash
+# Encrypt file to explicit recipient
+enstow encrypt ~/.config/app/secret.conf \
+  --output ~/dotfiles/app/.config/app/secret.conf.age \
+  --recipient age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+
+# Encrypt using identity key file to resolve recipient public key
+enstow encrypt ~/.env --age-key-file ~/.config/sops/age/keys.txt
+```
+
+Options:
+
+- `<file>`: File to encrypt (required).
+- `-o, --output <PATH>`: Output encrypted file path (defaults to `<file>.age`).
+- `-r, --recipient <KEY>`: Age recipient public key (can be repeated).
+- `--age-key-file <PATH>`: Identity file containing private keys to derive public keys.
+
+### edit
+
+Interactively decrypts an age secret file into a secure temporary file, opens it in `$ENSTOW_EDITOR`, `$VISUAL`, `$EDITOR`, or `--editor`, and re-encrypts it upon editor exit if modified.
+
+```bash
+# Edit an encrypted dotfile
+enstow edit ~/dotfiles/zsh/.zshrc.local.age
+
+# Edit using a specific editor
+enstow edit ~/dotfiles/zsh/.zshrc.local.age --editor nvim
+```
+
+Options:
+
+- `<file>`: Encrypted age file to edit (required).
+- `-r, --recipient <KEY>`: Recipient public key for re-encryption.
+- `--age-key-file <PATH>`: Age identity key file for decryption and recipient derivation.
+- `--editor <CMD>`: Custom editor executable name or command.
+
+### completions
+
+Outputs shell completion scripts for dynamic or static shell integration.
+
+```bash
+# Dynamic completions (recommended)
+enstow completions zsh > ~/.zfunc/_enstow
+
+# Static completions fallback
+enstow completions --static bash > /etc/bash_completion.d/enstow
+```
+
+Supported shells:
+
+- `bash`
+- `zsh`
+- `fish`
+- `powershell`
+- `elvish`
+
+### man
+
+Generates the UNIX roff format manual page for `enstow` to stdout.
+
+```bash
+enstow man > assets/enstow.1
+```
+
+---
+
+## Conflict Resolution, Backups & Pruning
+
+### Conflict Detection
+
+Before creating symlinks or writing decrypted files, `enstow` checks the target path:
+
+- If target does not exist: Proceed with creation.
+- If target is a symlink pointing to the expected source: Mark `SYNCED` / skip.
+- If target is a symlink pointing elsewhere, or a regular file: Flag as `CONFLICT`.
+
+### Resolution Flags
+
+1. `--dry-run` (`-n`): Simulates execution and outputs planned operations without altering filesystem.
+2. `--force` (`-f`): Overwrites conflicting target files or recreates differing symlinks.
+3. `--backup` (`-b`): Relocates conflicting files into `<backup-dir>` prior to creating new links or secret targets.
+4. `--backup-dir <PATH>`: Specifies backup directory (defaults to `<target>/.enstow-backup`). Preserves relative directory hierarchy.
+5. `--prune`: During `apply` or `restow`, detects and deletes dangling symlinks in target paths that point to deleted or moved source files.
+
+---
+
+## Secret Management & Encryption
+
+### Detection Patterns & Destination Mapping
+
+`enstow` recognizes secrets by file extension and naming convention, mapping them to plaintext target filenames:
+
+| Source File Pattern | Encryption Engine | Deployed Target Filename | Target Permissions |
+| :--- | :--- | :--- | :--- |
+| `<name>.age` | `age` | `<name>` | `0600` (`-rw-------`) |
+| `<name>.sops.yaml` | `sops` | `<name>.yaml` | `0600` (`-rw-------`) |
+| `<name>.sops.json` | `sops` | `<name>.json` | `0600` (`-rw-------`) |
+| `<name>.sops.<ext>` | `sops` | `<name>.<ext>` | `0600` (`-rw-------`) |
+| `.sops.yaml` (exact) | `sops` | `.sops.yaml` | `0600` (`-rw-------`) |
+
+Regular non-secret files are linked directly via filesystem symlinks (`symlink(source, target)`).
+
+### Permissions & Memory Safety
+
+- **In-Memory Decryption:** Decryption buffers are held in memory and never written to temporary unencrypted dotfile paths.
+- **Strict File Permissions:** Decrypted secret target files are created with mode `0600` (`-rw-------`) on Unix systems to prevent unauthorized access.
+- **Cross-Platform Security:** Path traversal attempts and permission setting failures are caught and reported as errors.
+
+### Age Recipient Resolution
+
+When encrypting or re-encrypting via `enstow encrypt` or `enstow edit`:
+
+1. Explicit `--recipient` flags take priority.
+2. If omitted, recipients are extracted from `--age-key-file`, `$ENSTOW_AGE_KEY_FILE`, or `$SOPS_AGE_KEY_FILE`.
+3. If omitted, recipients configured in `config.toml` (`recipients = [...]`) or environment variable `$ENSTOW_RECIPIENTS` are used.
+4. If a private key file is provided, `enstow` derives the public recipient key automatically.
+
+---
+
+## Ignore Rules & Patterns
+
+### Default Ignores
+
+The following files and directories are ignored by default across all packages:
+
+- `.git`
+- `.gitignore`
+- `.codegraph`
+- `.serena`
+- `.agents`
+- `.github`
+- `target`
+- `Cargo.lock`
+- `.enstowignore`
+- `.stow-local-ignore`
+
+### Custom Ignore Files
+
+1. `.enstowignore`: Placed in source root or package directories. Lines starting with `#` and empty lines are ignored.
+2. `.stow-local-ignore`: Fallback compatibility format matching GNU stow conventions.
+3. Command Line `--ignore <pattern>`: Passed directly via CLI or configuration file.
+
+Patterns match relative file paths using standard glob patterns (e.g. `*.tmp`, `*.swp`, `.DS_Store`).
+
+---
+
+## Configuration & Precedence
+
+### Hierarchical Precedence Order
+
+Configuration settings resolve in strict precedence (highest to lowest):
+
+1. **CLI Flags & Arguments** (`--source`, `--target`, `--force`, `--backup`, etc.)
+2. **Environment Variables** (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, etc.)
+3. **Configuration File** (`~/.config/enstow/config.toml`, `.yaml`, or `.json`)
+4. **Built-in Defaults** (source: `.`, target: `$HOME`, backup_dir: `$target/.enstow-backup`)
+
+### Configuration File Schema
+
+Supported locations:
+
+- `$ENSTOW_CONFIG` (explicit flag or environment variable)
+- `$XDG_CONFIG_HOME/enstow/config.toml` (or `config.yaml`, `config.json`)
+- `~/.config/enstow/config.toml`
+
+#### TOML Example (`~/.config/enstow/config.toml`)
+
+```toml
+source = "~/dotfiles"
+target = "~"
+dry_run = false
+force = false
+backup = false
+backup_dir = "~/.enstow-backup"
+prune = true
+age_key_file = "~/.config/sops/age/keys.txt"
+recipients = [
+  "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
+]
+packages = ["zsh", "nvim", "git"]
+editor = "nvim"
+ignore = ["*.tmp", ".DS_Store", "*.swp"]
+json = false
+log_level = "info"
+```
+
+#### YAML Example (`~/.config/enstow/config.yaml`)
+
+```yaml
+source: ~/dotfiles
+target: ~
+dry_run: false
+force: false
+backup: false
+backup_dir: ~/.enstow-backup
+prune: true
+age_key_file: ~/.config/sops/age/keys.txt
+recipients:
+  - age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+packages:
+  - zsh
+  - nvim
+  - git
+editor: nvim
+ignore:
+  - "*.tmp"
+  - ".DS_Store"
+  - "*.swp"
+json: false
+log_level: info
+```
+
+#### JSON Example (`~/.config/enstow/config.json`)
+
+```json
+{
+  "source": "~/dotfiles",
+  "target": "~",
+  "dry_run": false,
+  "force": false,
+  "backup": false,
+  "backup_dir": "~/.enstow-backup",
+  "prune": true,
+  "age_key_file": "~/.config/sops/age/keys.txt",
+  "recipients": [
+    "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
+  ],
+  "packages": [
+    "zsh",
+    "nvim",
+    "git"
+  ],
+  "editor": "nvim",
+  "ignore": [
+    "*.tmp",
+    ".DS_Store",
+    "*.swp"
+  ],
+  "json": false,
+  "log_level": "info"
+}
+```
+
+---
+
+## Environment Variables Reference
+
+| Environment Variable | Description | Equivalent Flag / Config |
+| :--- | :--- | :--- |
+| `ENSTOW_CONFIG` | Path to explicit configuration file | `-C, --config` |
+| `ENSTOW_SOURCE` | Default dotfiles source directory | `-s, --source` |
+| `ENSTOW_TARGET` | Destination directory for dotfiles | `-t, --target` |
+| `ENSTOW_DRY_RUN` | Enable dry-run mode (`1`, `true`) | `-n, --dry-run` |
+| `ENSTOW_FORCE` | Force overwrite existing files (`1`, `true`) | `-f, --force` |
+| `ENSTOW_BACKUP` | Backup conflicting files before overwrite (`1`, `true`) | `-b, --backup` |
+| `ENSTOW_BACKUP_DIR` | Directory to relocate backup files | `--backup-dir` |
+| `ENSTOW_PRUNE` | Prune stale symlinks on apply (`1`, `true`) | `--prune` |
+| `ENSTOW_AGE_KEY_FILE` | Primary path to age private identity keys | `--age-key-file` |
+| `SOPS_AGE_KEY_FILE` | Fallback path to age private identity keys | `--age-key-file` |
+| `ENSTOW_RECIPIENTS` | Comma-separated list of age recipient public keys | `-r, --recipient` |
+| `SOPS_AGE_RECIPIENTS` | Fallback comma-separated recipient keys | `-r, --recipient` |
+| `ENSTOW_PACKAGES` | Comma-separated list of default packages | `[PACKAGES...]` |
+| `ENSTOW_EDITOR` | Editor for secret modification in `enstow edit` | `--editor` |
+| `VISUAL` / `EDITOR` | Standard fallback editors for `enstow edit` | `--editor` |
+| `ENSTOW_IGNORE` | Comma-separated glob patterns to ignore | `-i, --ignore` |
+| `ENSTOW_JSON` | Enable JSON output for status command (`1`, `true`) | `--json` |
+| `ENSTOW_LOG_LEVEL` | Log level (`trace`, `debug`, `info`, `warn`, `error`) | `--log-level` |
+| `RUST_LOG` | Tracing filter directive | `--log-level` |
+
+---
+
+## Core Rust Modules & Internal Architecture
+
+### `src/lib.rs`
+
+Declares public library modules:
+
+- `pub mod cli;`
+- `pub mod config;`
+- `pub mod crypto;`
+- `pub mod error;`
+- `pub mod stow;`
+
+### `src/cli.rs`
+
+Handles argument parsing and completions:
+
+- `struct Cli`: Root parser with global options (`config`, `log_level`, `verbose`, `quiet`), subcommands, and common arguments.
+- `struct CommonArgs`: Shared arguments across stow/unstow/restow/status. Resolves `source_path()`, `target_path()`, and `backup_dir_path()`.
+- `enum Commands`: Subcommands enum (`Apply`, `Restow`, `Unstow`, `Encrypt`, `Edit`, `Status`, `Man`, `Completions`).
+- `fn generate_manpage(...)`: Renders man page using `clap_mangen`.
+- `fn generate_completions(...)`: Dynamic environment completer with static fallback via `clap_complete`.
+
+### `src/stow.rs`
+
+Implements filesystem scanning and planning:
+
+- `enum FileAction`: Represents planned filesystem mutation:
+  - `Link { source: PathBuf, target: PathBuf }`: Create regular symlink.
+  - `DecryptSecret { source: PathBuf, target: PathBuf, secret_type: SecretType }`: In-memory decryption and 0600 target write.
+  - `Unlink { target: PathBuf }`: Remove managed symlink.
+  - `RemoveSecret { target: PathBuf }`: Remove managed secret file.
+- `enum EntryStatus`: Status classification (`Synced`, `Missing`, `Conflict`, `Modified`, `Unverified`).
+- `struct FileActionStatus`: Pairs `FileAction` with evaluated `EntryStatus` and message.
+- `fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError>`: Scans package directories, applies ignore filters, and computes destination actions.
+- `fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError>`: Scans destination directories to locate managed symlinks and secret files for removal.
+- `fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError>`: Locates stale symlinks in destination pointing to deleted source paths.
+- `fn execute_plan(...)`: Performs atomic linking, writing, and directory creation.
+- `fn execute_plan_with_backup(...)`: Moves conflicting files to backup path before applying changes.
+- `fn check_status(...)`: Compares planned source actions against target filesystem state to produce status entries.
+
+### `src/crypto.rs`
+
+Handles cryptographic operations:
+
+- `enum SecretType`: Categorizes secrets (`Age`, `Sops`).
+- `fn detect_secret_type(path: &Path) -> Option<SecretType>`: Identifies secret file type based on extension.
+- `fn target_plaintext_name(path: &Path) -> Option<String>`: Translates encrypted filename to plaintext equivalent.
+- `fn decrypt_to_memory(...) -> Result<Vec<u8>, EnstowError>`: Decrypts file in memory without writing temporary files.
+- `fn decrypt_age(path: &Path, key_file: Option<&Path>) -> Result<Vec<u8>, EnstowError>`: Age decryption supporting armored and binary formats, identity keys, and passphrase prompting.
+- `fn decrypt_sops(path: &Path) -> Result<Vec<u8>, EnstowError>`: SOPS decryption via `sops --decrypt` execution.
+- `fn encrypt_file_age(...) -> Result<(), EnstowError>`: Encrypts file to age recipients.
+- `fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(), EnstowError>`: Writes decrypted buffer to disk with permissions `0600`.
+- `fn edit_file_age(...) -> Result<(), EnstowError>`: Decrypts secret to secure temporary file, launches editor, and re-encrypts if content changed.
+
+### `src/config.rs`
+
+Parses configuration files:
+
+- `enum ConfigFormat`: `Toml`, `Yaml`, `Json` derived from file extension.
+- `struct ConfigFile`: Serde-deserializable configuration representation.
+- `fn load_config(...) -> Result<ConfigFile, EnstowError>`: Searches configuration paths and parses appropriate format.
+- `fn merge_args(...)`: Merges configuration file settings into CLI arguments with CLI precedence.
+
+### `src/error.rs`
+
+Structured domain errors using `thiserror`:
+
+- `enum EnstowError`:
+  - `Io { path: PathBuf, source: std::io::Error }`
+  - `Decryption { path: PathBuf, message: String }`
+  - `Encryption { path: PathBuf, message: String }`
+  - `Conflict { path: PathBuf, message: String }`
+  - `Config(String)`
+  - `NotFound(PathBuf)`
+
+### `src/main.rs`
+
+Executable orchestration:
+
+- Sets up `tracing_subscriber` with environment and flag filtering.
+- Reads configuration and merges with CLI parameters.
+- Dispatches execution to command handlers.
+- Formats errors cleanly and exits with appropriate exit codes.
+
+---
+
+## Development, Testing & Quality Gates
+
+The project uses `task` (`go-task`) for workflow automation.
+
+### Available Tasks
+
+```bash
+# Run all tests, formatting, and linting
+task test
+
+# Format code with rustfmt
+task fmt
+
+# Check formatting without modifying files
+task fmt:check
+
+# Format Markdown documentation with rumdl
+task fmt:md
+
+# Lint code with clippy (-D warnings)
+task lint
+
+# Lint Markdown files with rumdl
+task lint:md
+
+# Run cargo check
+task check
+
+# Run unit and integration tests
+cargo test
+
+# Generate UNIX roff man page
+task man
+
+# Generate shell completion files
+task completions
+
+# Run test coverage report
+task coverage
+
+# Cross-compile release binaries for all targets (x86_64, aarch64, armv7, armv6)
+task build
+
+# Build locally in release mode
+task build:local
+```
+
+### CI Verification Matrix
+
+GitHub Actions (`.github/workflows/ci.yml`) runs quality checks across multiple platforms:
+
+- Linux (`ubuntu-latest`), macOS (`macos-latest`), Windows (`windows-latest`)
+- `cargo fmt --check`
+- `cargo clippy -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `rumdl check .` (Markdown linting)
+- `taplo lint` & `taplo fmt --check` (TOML validation)
+- Code coverage via `cargo-llvm-cov` uploaded to Coveralls
+
+---
+
+## License & Maintainer Information
+
+- **Author / Maintainer:** Nicholas Wilde
+- **License:** Apache License, Version 2.0 ([LICENSE](LICENSE))
+- **Repository:** [https://github.com/nicholaswilde/enstow](https://github.com/nicholaswilde/enstow)

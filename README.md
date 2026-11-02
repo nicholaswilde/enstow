@@ -5,7 +5,7 @@
 [![ci](https://img.shields.io/github/actions/workflow/status/nicholaswilde/enstow/ci.yml?label=ci&style=for-the-badge&branch=main&logo=github-actions)](https://github.com/nicholaswilde/enstow/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
 
-A high-performance, single-binary CLI secret-aware dotfile manager combining GNU `stow` symlinking with seamless `sops` and `age` decryption.
+A high-performance, single-binary CLI secret-aware dotfile manager combining GNU [`stow`](https://www.gnu.org/software/stow/) symlinking with seamless [`sops`](https://getsops.io/) and [`age`](https://github.com/FiloSottile/age) decryption.
 
 > [!WARNING]
 > This project is currently in a `v0.X.X` development stage. Features and configurations are subject to change, and breaking changes may be introduced at any time.
@@ -47,6 +47,9 @@ Or tap the repository first:
 brew tap nicholaswilde/homebrew-tap
 brew install enstow
 ```
+
+> [!NOTE]
+> The Homebrew tap will not be available until after the first release.
 
 ### Prerequisites
 

@@ -1,0 +1,45 @@
+# enstow
+
+> A secret-aware dotfile manager combining GNU stow symlinking with seamless sops and age decryption.
+
+enstow manages modular dotfile packages across platforms with native symlink tracking and in-memory decryption for secret files (e.g., .age and .sops.yaml). Plaintext secret targets are written with strict permissions (0600) without ever storing plaintext secrets in version control.
+
+## Documentation
+
+- [Project README](README.md): Comprehensive user guide covering features, installation, commands, examples, environment variables, and configuration.
+- [Man Page](assets/enstow.1): UNIX roff manual page documenting CLI arguments, subcommands, options, and behaviors.
+- [Configuration Example](assets/config.example.toml): Fully commented template demonstrating options for source, target, packages, keys, and ignore rules.
+
+## Core Modules
+
+- [CLI Definition](src/cli.rs): Clap-based CLI structure, command routing, arguments, and dynamic shell completions.
+- [Stow Engine](src/stow.rs): Dotfile scanning, file action planning, symlink creation, collision handling, backups, and status auditing.
+- [Cryptographic Engine](src/crypto.rs): Secret detection, in-memory age and sops decryption, secure file creation (0600), encryption, and interactive editing.
+- [Configuration Engine](src/config.rs): Hierarchical configuration parser for TOML, YAML, and JSON with precedence fallbacks.
+- [Error Types](src/error.rs): Custom error definitions covering I/O, encryption, decryption, symlink, and configuration failures.
+- [Library Root](src/lib.rs): Public module declarations and API surface.
+- [Main Entry](src/main.rs): Main executable entry point with tracing initialization and error reporting.
+
+## CLI Commands
+
+- [Apply](README.md#applying-dotfiles): Symlink regular dotfiles and decrypt secret files into target directories.
+- [Restow](README.md#restowing-packages): Re-apply dotfiles, pruning stale links and re-decrypting modified secrets.
+- [Unstow](README.md#unstowing-dotfiles): Cleanly remove symlinks and decrypted secret target files.
+- [Status](README.md#inspecting-status): Inspect sync, missing, conflict, modified drift, and unverified states with optional JSON output.
+- [Encrypt](README.md#encrypting-secrets): Encrypt dotfile secrets to recipient age public keys or identity key files.
+- [Edit](README.md#editing-secrets): Decrypt, edit in temporary memory or editor, and re-encrypt age secret files safely.
+- [Completions](README.md#shell-completions): Generate dynamic or static shell completion scripts for Bash, Zsh, Fish, PowerShell, and Elvish.
+- [Man](README.md#man-page): Output UNIX roff format man page to stdout.
+
+## Build and Quality Gates
+
+- [Cargo Manifest](Cargo.toml): Package configuration, dependencies (clap, age, walkdir, serde, tempfile), and release profile definitions.
+- [Taskfile Automation](Taskfile.yml): Standard tasks for cross-compiling, testing, clippy linting, formatting, coverage, and releases.
+- [CI Pipeline](.github/workflows/ci.yml): GitHub Actions automated test, lint, and cross-platform verification matrix.
+
+## Optional
+
+- [License](LICENSE): Apache 2.0 license file.
+- [Release Script](scripts/release.sh): Automated version bump, validation, and git tagging script.
+- [Release Summary](scripts/release_summary.py): Script generating categorized GitHub release notes from git commits.
+- [Pre-generated Completions](completions): Directory containing shell completions for Bash, Zsh, Fish, PowerShell, and Elvish.
