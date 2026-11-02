@@ -14,6 +14,30 @@ pub struct Cli {
     #[arg(short = 'C', long, global = true, env = "ENSTOW_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// Log level filter (trace, debug, info, warn, error, off)
+    #[arg(long, global = true, value_name = "LEVEL")]
+    pub log_level: Option<String>,
+
+    /// Verbose output (-v for debug, -vv for trace)
+    #[arg(
+        short = 'v',
+        long,
+        action = clap::ArgAction::Count,
+        global = true,
+        conflicts_with = "quiet"
+    )]
+    pub verbose: u8,
+
+    /// Quiet mode (-q for warn, -qq for error)
+    #[arg(
+        short = 'q',
+        long,
+        action = clap::ArgAction::Count,
+        global = true,
+        conflicts_with = "verbose"
+    )]
+    pub quiet: u8,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 

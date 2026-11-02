@@ -1,17 +1,18 @@
 use clap::Parser;
 use enstow::cli::{Cli, Commands};
 use enstow::stow;
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
 
 fn main() -> anyhow::Result<()> {
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).ok();
-
     let cli = Cli::parse();
     let config = enstow::config::load_config(cli.config.as_deref())?.map(|(_, cfg)| cfg);
+    let log_level = enstow::config::resolve_log_level(
+        cli.log_level.as_deref(),
+        cli.verbose,
+        cli.quiet,
+        config.as_ref(),
+    );
+    enstow::config::init_tracing(&log_level)?;
+    tracing::debug!("Log level initialized to '{}'", log_level);
 
     match cli.command {
         Some(Commands::Apply(args)) => {

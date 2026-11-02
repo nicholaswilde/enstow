@@ -2,7 +2,8 @@ use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{
     load_config, resolve_age_key_file, resolve_common_args, resolve_editor,
-    resolve_ignore_patterns, resolve_json, resolve_recipients, ConfigFile, ConfigFormat,
+    resolve_ignore_patterns, resolve_json, resolve_log_level, resolve_recipients, ConfigFile,
+    ConfigFormat,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,7 @@ packages = ["zsh", "git"]
 editor = "vim"
 ignore = [".git", "*.swp"]
 json = true
+log_level = "warn"
 "#;
 
     let yaml_str = r#"
@@ -60,6 +62,7 @@ ignore:
   - .git
   - "*.swp"
 json: true
+log_level: warn
 "#;
 
     let json_str = r#"{
@@ -70,7 +73,8 @@ json: true
   "packages": ["zsh", "git"],
   "editor": "vim",
   "ignore": [".git", "*.swp"],
-  "json": true
+  "json": true,
+  "log_level": "warn"
 }"#;
 
     let cfg_toml = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
@@ -100,6 +104,7 @@ json: true
         Some(vec![".git".to_string(), "*.swp".to_string()])
     );
     assert_eq!(cfg_toml.json, Some(true));
+    assert_eq!(cfg_toml.log_level, Some("warn".to_string()));
 }
 
 #[test]
@@ -654,5 +659,86 @@ json = false
     std::env::remove_var("ENSTOW_JSON");
     if let Some(v) = orig_json {
         std::env::set_var("ENSTOW_JSON", v);
+    }
+}
+
+#[test]
+fn test_log_level_precedence_hierarchy() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+
+    let orig_enstow_log = std::env::var("ENSTOW_LOG_LEVEL").ok();
+    let orig_rust_log = std::env::var("RUST_LOG").ok();
+
+    std::env::remove_var("ENSTOW_LOG_LEVEL");
+    std::env::remove_var("RUST_LOG");
+
+    // 1. Default fallback is "info"
+    assert_eq!(resolve_log_level(None, 0, 0, None), "info");
+
+    // 2. Config file alone
+    let cfg = ConfigFile {
+        log_level: Some("warn".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg)), "warn");
+
+    // Case insensitivity
+    let cfg_upper = ConfigFile {
+        log_level: Some("ERROR".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg_upper)), "error");
+
+    // Empty config string falls back to default
+    let cfg_empty = ConfigFile {
+        log_level: Some("   ".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg_empty)), "info");
+
+    // 3. Fallback to RUST_LOG environment variable overrides config file
+    std::env::set_var("RUST_LOG", "debug");
+    assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg)), "debug");
+    assert_eq!(resolve_log_level(None, 0, 0, None), "debug");
+
+    // 4. ENSTOW_LOG_LEVEL environment variable overrides RUST_LOG and config file
+    std::env::set_var("ENSTOW_LOG_LEVEL", "error");
+    assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg)), "error");
+    assert_eq!(resolve_log_level(None, 0, 0, None), "error");
+
+    // Empty ENSTOW_LOG_LEVEL falls back to RUST_LOG
+    std::env::set_var("ENSTOW_LOG_LEVEL", "");
+    assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg)), "debug");
+
+    // Clean env for CLI testing
+    std::env::set_var("ENSTOW_LOG_LEVEL", "error");
+    std::env::set_var("RUST_LOG", "trace");
+
+    // 5. CLI -v / --verbose overrides env vars and config
+    // -v -> "debug"
+    assert_eq!(resolve_log_level(None, 1, 0, Some(&cfg)), "debug");
+    // -vv -> "trace"
+    assert_eq!(resolve_log_level(None, 2, 0, Some(&cfg)), "trace");
+    assert_eq!(resolve_log_level(None, 3, 0, Some(&cfg)), "trace");
+
+    // 6. CLI -q / --quiet overrides env vars and config
+    // -q -> "warn"
+    assert_eq!(resolve_log_level(None, 0, 1, Some(&cfg)), "warn");
+    // -qq -> "error"
+    assert_eq!(resolve_log_level(None, 0, 2, Some(&cfg)), "error");
+
+    // 7. CLI --log-level overrides everything
+    assert_eq!(resolve_log_level(Some("debug"), 0, 0, Some(&cfg)), "debug");
+    assert_eq!(resolve_log_level(Some("INFO"), 0, 0, Some(&cfg)), "info");
+    assert_eq!(resolve_log_level(Some("off"), 2, 2, Some(&cfg)), "off");
+
+    // Clean up
+    std::env::remove_var("ENSTOW_LOG_LEVEL");
+    std::env::remove_var("RUST_LOG");
+    if let Some(v) = orig_enstow_log {
+        std::env::set_var("ENSTOW_LOG_LEVEL", v);
+    }
+    if let Some(v) = orig_rust_log {
+        std::env::set_var("RUST_LOG", v);
     }
 }

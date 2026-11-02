@@ -65,6 +65,7 @@ pub struct ConfigFile {
     pub ignore: Option<Vec<String>>,
     pub json: Option<bool>,
     pub output: Option<String>,
+    pub log_level: Option<String>,
 }
 
 impl ConfigFile {
@@ -477,4 +478,79 @@ pub fn resolve_ignore_patterns(cli_ignore: &[String], config: Option<&ConfigFile
     }
 
     result
+}
+
+/// Resolve log level across CLI flags, environment variables, config file, and defaults.
+/// Precedence: CLI (--log-level, -v, -q) > ENSTOW_LOG_LEVEL > RUST_LOG > Config (log_level) > Default ("info")
+pub fn resolve_log_level(
+    cli_log_level: Option<&str>,
+    verbose: u8,
+    quiet: u8,
+    config: Option<&ConfigFile>,
+) -> String {
+    // 1. CLI explicit flag: --log-level
+    if let Some(level) = cli_log_level {
+        let trimmed = level.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_lowercase();
+        }
+    }
+
+    // CLI -v / --verbose flag (1 -> debug, >=2 -> trace)
+    if verbose > 0 {
+        return if verbose >= 2 {
+            "trace".to_string()
+        } else {
+            "debug".to_string()
+        };
+    }
+
+    // CLI -q / --quiet flag (1 -> warn, >=2 -> error)
+    if quiet > 0 {
+        return if quiet >= 2 {
+            "error".to_string()
+        } else {
+            "warn".to_string()
+        };
+    }
+
+    // 2. Environment variables: ENSTOW_LOG_LEVEL with fallback to RUST_LOG
+    if let Ok(val) = std::env::var("ENSTOW_LOG_LEVEL") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_lowercase();
+        }
+    }
+
+    if let Ok(val) = std::env::var("RUST_LOG") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_lowercase();
+        }
+    }
+
+    // 3. Configuration file
+    if let Some(cfg) = config {
+        if let Some(val) = &cfg.log_level {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_lowercase();
+            }
+        }
+    }
+
+    // 4. Default: "info"
+    "info".to_string()
+}
+
+/// Initialize `tracing_subscriber` with dynamic level filter based on resolved settings.
+pub fn init_tracing(level_str: &str) -> Result<()> {
+    let filter = tracing_subscriber::filter::EnvFilter::try_new(level_str)
+        .with_context(|| format!("Invalid log level filter '{level_str}'"))?;
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).ok();
+    Ok(())
 }
