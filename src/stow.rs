@@ -266,12 +266,36 @@ pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
                     };
 
                     let norm_dest = normalize_path(&full_dest);
+                    let canon_dest = full_dest.canonicalize().ok().or_else(|| {
+                        // For dangling symlinks where target was removed, resolve nearest existing ancestor
+                        let mut ancestor = full_dest.parent();
+                        let mut rel_components = Vec::new();
+                        if let Some(name) = full_dest.file_name() {
+                            rel_components.push(name);
+                        }
+                        while let Some(dir) = ancestor {
+                            if let Ok(canon) = dir.canonicalize() {
+                                let mut res = canon;
+                                for comp in rel_components.into_iter().rev() {
+                                    res.push(comp);
+                                }
+                                return Some(res);
+                            }
+                            if let Some(name) = dir.file_name() {
+                                rel_components.push(name);
+                            }
+                            ancestor = dir.parent();
+                        }
+                        None
+                    });
+                    let norm_canon_dest = canon_dest.as_ref().map(|c| normalize_path(c));
+
                     let belongs_to_pkg = pkg_roots.iter().any(|pkg_root| {
                         let norm_pkg = normalize_path(pkg_root);
                         norm_dest.starts_with(&norm_pkg)
-                            || full_dest
-                                .canonicalize()
-                                .map(|c| normalize_path(&c).starts_with(&norm_pkg))
+                            || norm_canon_dest
+                                .as_ref()
+                                .map(|c| c.starts_with(&norm_pkg))
                                 .unwrap_or(false)
                     });
 
@@ -285,9 +309,19 @@ pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
                         });
 
                         if !already_active {
+                            let norm_sp = normalize_path(symlink_path);
+                            let norm_tc = normalize_path(&target_canonical);
+                            let relative_target = symlink_path
+                                .strip_prefix(&target_canonical)
+                                .or_else(|_| norm_sp.strip_prefix(&norm_tc));
+                            let target = match relative_target {
+                                Ok(rel) => target_path.join(rel),
+                                Err(_) => symlink_path.to_path_buf(),
+                            };
+
                             stale_actions.push(FileAction::Symlink {
                                 source: full_dest,
-                                target: symlink_path.to_path_buf(),
+                                target,
                             });
                         }
                     }

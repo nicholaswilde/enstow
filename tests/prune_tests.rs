@@ -150,7 +150,10 @@ fn test_apply_with_prune_removes_stale_symlinks() {
     };
     let stale_actions = enstow::stow::plan_prune(&prune_args).unwrap();
     assert_eq!(stale_actions.len(), 1);
-    assert_eq!(stale_actions[0].target(), target_file2);
+    assert_eq!(
+        enstow::stow::normalize_path(stale_actions[0].target()),
+        enstow::stow::normalize_path(&target_file2)
+    );
 
     execute_unstow_plan(
         &stale_actions,
