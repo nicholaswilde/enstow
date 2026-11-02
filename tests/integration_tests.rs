@@ -219,3 +219,64 @@ force = false
         std::env::set_var("ENSTOW_FORCE", v);
     }
 }
+
+#[test]
+fn test_status_json_resolution_and_output_end_to_end() {
+    let orig_json = std::env::var("ENSTOW_JSON").ok();
+    std::env::remove_var("ENSTOW_JSON");
+
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let config_dir = tempdir().unwrap();
+
+    let dotfile = source_dir.path().join(".zshrc");
+    fs::write(&dotfile, "export ZSH=1\n").unwrap();
+
+    let config_path = config_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+json = true
+"#,
+    )
+    .unwrap();
+    let config = enstow::config::ConfigFile::load_from_path(&config_path).unwrap();
+
+    let cli_args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        ..Default::default()
+    };
+
+    let common = enstow::config::resolve_common_args(&cli_args, Some(&config)).to_common_args();
+    let plan = plan_stow(&common).unwrap();
+    let statuses = enstow::stow::check_status(&plan, None).unwrap();
+
+    // 1. Config json = true resolves to json output enabled by default
+    let json_enabled = enstow::config::resolve_json(false, Some(&config));
+    assert!(json_enabled);
+
+    // Verify JSON serialization format
+    let json_output = serde_json::to_string_pretty(&statuses).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_output).unwrap();
+    assert!(parsed.is_array());
+    assert_eq!(parsed.as_array().unwrap().len(), 1);
+    assert_eq!(parsed[0]["status"], "missing");
+
+    // 2. ENSTOW_JSON=0 overrides config json = true to false
+    std::env::set_var("ENSTOW_JSON", "0");
+    assert!(!enstow::config::resolve_json(false, Some(&config)));
+
+    // 3. CLI --json flag overrides ENSTOW_JSON=0
+    assert!(enstow::config::resolve_json(true, Some(&config)));
+
+    // 4. ENSTOW_JSON=1 enables json without config or CLI flag
+    std::env::set_var("ENSTOW_JSON", "1");
+    assert!(enstow::config::resolve_json(false, None));
+
+    // Cleanup env
+    std::env::remove_var("ENSTOW_JSON");
+    if let Some(v) = orig_json {
+        std::env::set_var("ENSTOW_JSON", v);
+    }
+}

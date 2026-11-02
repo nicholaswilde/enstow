@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Status { common, json }) => {
             let resolved_common =
                 enstow::config::resolve_common_args(&common, config.as_ref()).to_common_args();
+            let json = enstow::config::resolve_json(json, config.as_ref());
             let actions = stow::plan_stow(&resolved_common)?;
             let statuses = stow::check_status(&actions, resolved_common.age_key_file.as_deref())?;
             if json {

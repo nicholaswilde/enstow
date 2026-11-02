@@ -38,3 +38,7 @@
 #     ".DS_Store",
 #     "*.swp",
 # ]
+
+# Output status in JSON format by default ($ENSTOW_JSON or --json)
+# json = false
+

@@ -109,7 +109,7 @@ pub enum Commands {
         #[command(flatten)]
         common: CommonArgs,
 
-        /// Output status in JSON format
+        /// Output status in JSON format ($ENSTOW_JSON)
         #[arg(long)]
         json: bool,
     },

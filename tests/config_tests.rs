@@ -2,7 +2,7 @@ use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{
     load_config, resolve_age_key_file, resolve_common_args, resolve_editor,
-    resolve_ignore_patterns, resolve_recipients, ConfigFile, ConfigFormat,
+    resolve_ignore_patterns, resolve_json, resolve_recipients, ConfigFile, ConfigFormat,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,6 +42,7 @@ recipients = ["age1test1", "age1test2"]
 packages = ["zsh", "git"]
 editor = "vim"
 ignore = [".git", "*.swp"]
+json = true
 "#;
 
     let yaml_str = r#"
@@ -58,6 +59,7 @@ editor: vim
 ignore:
   - .git
   - "*.swp"
+json: true
 "#;
 
     let json_str = r#"{
@@ -67,7 +69,8 @@ ignore:
   "recipients": ["age1test1", "age1test2"],
   "packages": ["zsh", "git"],
   "editor": "vim",
-  "ignore": [".git", "*.swp"]
+  "ignore": [".git", "*.swp"],
+  "json": true
 }"#;
 
     let cfg_toml = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
@@ -96,6 +99,7 @@ ignore:
         cfg_toml.ignore,
         Some(vec![".git".to_string(), "*.swp".to_string()])
     );
+    assert_eq!(cfg_toml.json, Some(true));
 }
 
 #[test]
@@ -587,5 +591,68 @@ fn test_resolve_ignore_patterns() {
     std::env::remove_var("ENSTOW_IGNORE");
     if let Some(v) = orig_ignore {
         std::env::set_var("ENSTOW_IGNORE", v);
+    }
+}
+
+#[test]
+fn test_json_output_precedence_hierarchy() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let orig_json = std::env::var("ENSTOW_JSON").ok();
+    std::env::remove_var("ENSTOW_JSON");
+
+    // 1. Defaults to false when CLI, env, and config are not set
+    assert!(!resolve_json(false, None));
+
+    // 2. Config file alone sets json = true
+    let toml_true = r#"
+json = true
+"#;
+    let config_true = ConfigFile::parse(toml_true, ConfigFormat::Toml).unwrap();
+    assert!(resolve_json(false, Some(&config_true)));
+
+    // 2b. Config file sets output = "json"
+    let toml_output = r#"
+output = "json"
+"#;
+    let config_output = ConfigFile::parse(toml_output, ConfigFormat::Toml).unwrap();
+    assert!(resolve_json(false, Some(&config_output)));
+
+    // 2c. Config file explicitly sets json = false
+    let toml_false = r#"
+json = false
+"#;
+    let config_false = ConfigFile::parse(toml_false, ConfigFormat::Toml).unwrap();
+    assert!(!resolve_json(false, Some(&config_false)));
+
+    // 3. Env var ENSTOW_JSON overrides config file:
+    // 3a. ENSTOW_JSON="0" or "false" disables JSON even if config has json = true
+    std::env::set_var("ENSTOW_JSON", "0");
+    assert!(!resolve_json(false, Some(&config_true)));
+    std::env::set_var("ENSTOW_JSON", "false");
+    assert!(!resolve_json(false, Some(&config_true)));
+
+    // 3b. ENSTOW_JSON="1" or "true" enables JSON even if config has json = false
+    std::env::set_var("ENSTOW_JSON", "1");
+    assert!(resolve_json(false, Some(&config_false)));
+    std::env::set_var("ENSTOW_JSON", "true");
+    assert!(resolve_json(false, Some(&config_false)));
+
+    // 3c. ENSTOW_JSON="1" enables JSON with no config file
+    assert!(resolve_json(false, None));
+
+    // 4. CLI explicit flag overrides ENSTOW_JSON and config file
+    // Even if ENSTOW_JSON=0 and config has json = false, cli_json = true enables JSON
+    std::env::set_var("ENSTOW_JSON", "0");
+    assert!(resolve_json(true, Some(&config_false)));
+
+    std::env::set_var("ENSTOW_JSON", "false");
+    assert!(resolve_json(true, Some(&config_false)));
+
+    assert!(resolve_json(true, None));
+
+    // Clean up
+    std::env::remove_var("ENSTOW_JSON");
+    if let Some(v) = orig_json {
+        std::env::set_var("ENSTOW_JSON", v);
     }
 }

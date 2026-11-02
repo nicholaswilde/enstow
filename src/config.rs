@@ -63,6 +63,8 @@ pub struct ConfigFile {
     pub packages: Option<Vec<String>>,
     pub editor: Option<String>,
     pub ignore: Option<Vec<String>>,
+    pub json: Option<bool>,
+    pub output: Option<String>,
 }
 
 impl ConfigFile {
@@ -322,6 +324,25 @@ pub fn parse_bool_env(var: &str) -> Option<bool> {
         Some(false)
     } else {
         None
+    }
+}
+
+/// Resolve JSON output precedence: CLI (--json) > ENSTOW_JSON > Config (json / output == "json") > Default (false)
+pub fn resolve_json(cli_json: bool, config: Option<&ConfigFile>) -> bool {
+    if cli_json {
+        true
+    } else if let Some(env_json) = parse_bool_env("ENSTOW_JSON") {
+        env_json
+    } else if let Some(cfg) = config {
+        if let Some(j) = cfg.json {
+            j
+        } else if let Some(out) = &cfg.output {
+            out.trim().eq_ignore_ascii_case("json")
+        } else {
+            false
+        }
+    } else {
+        false
     }
 }
 
