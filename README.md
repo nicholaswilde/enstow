@@ -104,10 +104,10 @@ enstow encrypt secret.json --age-key-file ~/.config/sops/age/keys.txt
 
 ### Edit Secrets
 
-Interactively decrypt, edit in `$EDITOR`, and re-encrypt an `.age` file:
+Interactively decrypt, edit in `$ENSTOW_EDITOR` (or `$VISUAL` / `$EDITOR`), and re-encrypt an `.age` file:
 
 ```bash
-# Edit using default editor ($VISUAL / $EDITOR / system fallback)
+# Edit using default editor ($ENSTOW_EDITOR / $VISUAL / $EDITOR / system fallback)
 enstow edit secret.env.age
 
 # Edit using explicit key file
@@ -126,7 +126,7 @@ See [assets/config.example.toml](assets/config.example.toml) for an example temp
 **Precedence Order:**
 
 1. CLI Arguments (`--source`, `--target`, `--age-key-file`, `--recipient`, `--editor`)
-2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `SOPS_AGE_KEY_FILE`, `SOPS_AGE_RECIPIENTS`, `EDITOR`)
+2. Environment Variables (`ENSTOW_SOURCE`, `ENSTOW_TARGET`, `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`, `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS`, `ENSTOW_EDITOR` / `VISUAL` / `EDITOR`)
 3. Configuration File (`config.{toml,yaml,json}`)
 4. Built-in Defaults
 

@@ -40,7 +40,7 @@ pub struct CommonArgs {
     pub force: bool,
 
     /// Explicit path to age identity key file
-    #[arg(long, env = "SOPS_AGE_KEY_FILE")]
+    #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,
 
     /// Dotfile packages to stow or unstow
@@ -84,7 +84,7 @@ pub enum Commands {
         recipient: Vec<String>,
 
         /// Explicit path to age identity key file to resolve recipient public key
-        #[arg(long, env = "SOPS_AGE_KEY_FILE")]
+        #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
         age_key_file: Option<PathBuf>,
     },
     /// Edit an age encrypted secret file interactively
@@ -97,10 +97,10 @@ pub enum Commands {
         recipient: Vec<String>,
 
         /// Explicit path to age identity key file to resolve recipient public key
-        #[arg(long, env = "SOPS_AGE_KEY_FILE")]
+        #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
         age_key_file: Option<PathBuf>,
 
-        /// Custom editor command to use instead of $VISUAL or $EDITOR
+        /// Custom editor command to use instead of $ENSTOW_EDITOR, $VISUAL, or $EDITOR
         #[arg(long)]
         editor: Option<String>,
     },

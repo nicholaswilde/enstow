@@ -258,18 +258,8 @@ pub fn resolve_common_args(
         default_target_dir()
     };
 
-    // 3. Age key file precedence: CLI > SOPS_AGE_KEY_FILE > Config
-    let age_key_file = if let Some(k) = &cli_args.age_key_file {
-        Some(k.clone())
-    } else if let Ok(k_env) = std::env::var("SOPS_AGE_KEY_FILE") {
-        if !k_env.trim().is_empty() {
-            Some(PathBuf::from(k_env))
-        } else {
-            config.and_then(|c| c.age_key_file.clone())
-        }
-    } else {
-        config.and_then(|c| c.age_key_file.clone())
-    };
+    // 3. Age key file precedence: CLI > ENSTOW_AGE_KEY_FILE > SOPS_AGE_KEY_FILE > Config
+    let age_key_file = resolve_age_key_file(cli_args.age_key_file.as_deref(), config);
 
     // 4. Packages precedence: CLI (if non-empty) > ENSTOW_PACKAGES > Config > empty
     let packages = if !cli_args.packages.is_empty() {
@@ -305,11 +295,17 @@ pub fn resolve_common_args(
     }
 }
 
-/// Resolve editor precedence: CLI (--editor) > VISUAL > EDITOR > Config (editor) > Default (None)
+/// Resolve editor precedence: CLI (--editor) > ENSTOW_EDITOR > VISUAL > EDITOR > Config (editor) > Default (None)
 pub fn resolve_editor(cli_editor: Option<&str>, config: Option<&ConfigFile>) -> Option<String> {
     if let Some(ed) = cli_editor {
         if !ed.trim().is_empty() {
             return Some(ed.to_string());
+        }
+    }
+
+    if let Ok(enstow_editor) = std::env::var("ENSTOW_EDITOR") {
+        if !enstow_editor.trim().is_empty() {
+            return Some(enstow_editor);
         }
     }
 
@@ -335,18 +331,28 @@ pub fn resolve_editor(cli_editor: Option<&str>, config: Option<&ConfigFile>) -> 
 }
 
 /// Resolve age recipient public keys precedence:
-/// CLI (--recipient) > SOPS_AGE_RECIPIENTS > Config (recipients) > empty
+/// CLI (--recipient) > ENSTOW_RECIPIENTS > SOPS_AGE_RECIPIENTS > Config (recipients) > empty
 pub fn resolve_recipients(cli_recipients: &[String], config: Option<&ConfigFile>) -> Vec<String> {
     if !cli_recipients.is_empty() {
         return cli_recipients.to_vec();
     }
 
-    if let Ok(recipients_env) = std::env::var("SOPS_AGE_RECIPIENTS") {
-        let keys: Vec<String> = recipients_env
-            .split([',', '\n'])
+    let parse_keys = |val: &str| -> Vec<String> {
+        val.split([',', '\n'])
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .collect();
+            .collect()
+    };
+
+    if let Ok(recs_env) = std::env::var("ENSTOW_RECIPIENTS") {
+        let keys = parse_keys(&recs_env);
+        if !keys.is_empty() {
+            return keys;
+        }
+    }
+
+    if let Ok(recipients_env) = std::env::var("SOPS_AGE_RECIPIENTS") {
+        let keys = parse_keys(&recipients_env);
         if !keys.is_empty() {
             return keys;
         }
@@ -363,13 +369,19 @@ pub fn resolve_recipients(cli_recipients: &[String], config: Option<&ConfigFile>
 }
 
 /// Resolve age identity key file precedence:
-/// CLI (--age-key-file) > SOPS_AGE_KEY_FILE > Config (age_key_file) > None
+/// CLI (--age-key-file) > ENSTOW_AGE_KEY_FILE > SOPS_AGE_KEY_FILE > Config (age_key_file) > None
 pub fn resolve_age_key_file(
     cli_key_file: Option<&Path>,
     config: Option<&ConfigFile>,
 ) -> Option<PathBuf> {
     if let Some(k) = cli_key_file {
         return Some(k.to_path_buf());
+    }
+
+    if let Ok(k_env) = std::env::var("ENSTOW_AGE_KEY_FILE") {
+        if !k_env.trim().is_empty() {
+            return Some(PathBuf::from(k_env));
+        }
     }
 
     if let Ok(k_env) = std::env::var("SOPS_AGE_KEY_FILE") {

@@ -52,7 +52,7 @@ pub fn decrypt_age(path: &Path, age_key_file: Option<&Path>) -> Result<Vec<u8>, 
         return Err(EnstowError::Decryption {
             path: path.to_path_buf(),
             message:
-                "No age key file found. Set SOPS_AGE_KEY_FILE or ensure default age key exists."
+                "No age key file found. Set ENSTOW_AGE_KEY_FILE (or SOPS_AGE_KEY_FILE) or ensure default age key exists."
                     .into(),
         });
     }
@@ -151,11 +151,13 @@ pub fn encrypt_file_age(
         recipient_list.push(Box::new(pk));
     }
 
-    // 2. SOPS_AGE_RECIPIENTS env var if none provided
+    // 2. ENSTOW_RECIPIENTS / SOPS_AGE_RECIPIENTS env var if none provided
     if recipient_list.is_empty() {
-        if let Ok(env_recips) = std::env::var("SOPS_AGE_RECIPIENTS") {
-            for r in env_recips
-                .split(',')
+        let env_recips =
+            std::env::var("ENSTOW_RECIPIENTS").or_else(|_| std::env::var("SOPS_AGE_RECIPIENTS"));
+        if let Ok(recips_val) = env_recips {
+            for r in recips_val
+                .split([',', '\n'])
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
             {
@@ -183,7 +185,7 @@ pub fn encrypt_file_age(
 
     if recipient_list.is_empty() {
         return Err(EnstowError::Config(
-            "No age recipients found. Provide --recipient, set SOPS_AGE_RECIPIENTS, or ensure an age key file exists.".into(),
+            "No age recipients found. Provide --recipient, set ENSTOW_RECIPIENTS (or SOPS_AGE_RECIPIENTS), or ensure an age key file exists.".into(),
         ));
     }
 
@@ -359,6 +361,11 @@ pub fn edit_file_age(
     let editor = editor_override
         .map(String::from)
         .or_else(|| {
+            std::env::var("ENSTOW_EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
             std::env::var("VISUAL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
@@ -436,6 +443,12 @@ fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
     if let Some(explicit) = explicit_key {
         paths.push(explicit.to_path_buf());
     }
+    if let Ok(key_file) = std::env::var("ENSTOW_AGE_KEY_FILE") {
+        let p = PathBuf::from(key_file);
+        if !paths.contains(&p) {
+            paths.push(p);
+        }
+    }
     if let Ok(key_file) = std::env::var("SOPS_AGE_KEY_FILE") {
         let p = PathBuf::from(key_file);
         if !paths.contains(&p) {
@@ -443,7 +456,11 @@ fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
         }
     }
     if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(home).join(".config/sops/age/keys.txt");
+        let p = PathBuf::from(home)
+            .join(".config")
+            .join("sops")
+            .join("age")
+            .join("keys.txt");
         if !paths.contains(&p) {
             paths.push(p);
         }

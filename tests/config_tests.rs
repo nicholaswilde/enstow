@@ -1,6 +1,7 @@
 use enstow::cli::CommonArgs;
 use enstow::config::{
-    load_config, resolve_common_args, resolve_editor, resolve_recipients, ConfigFile, ConfigFormat,
+    load_config, resolve_age_key_file, resolve_common_args, resolve_editor, resolve_recipients,
+    ConfigFile, ConfigFormat,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -285,5 +286,96 @@ recipients = ["recipient_config"]
     }
     if let Some(v) = orig_packages {
         std::env::set_var("ENSTOW_PACKAGES", v);
+    }
+}
+
+#[test]
+fn test_enstow_env_aliases_precedence() {
+    let orig_enstow_age_key = std::env::var("ENSTOW_AGE_KEY_FILE").ok();
+    let orig_sops_age_key = std::env::var("SOPS_AGE_KEY_FILE").ok();
+    let orig_enstow_recipients = std::env::var("ENSTOW_RECIPIENTS").ok();
+    let orig_sops_recipients = std::env::var("SOPS_AGE_RECIPIENTS").ok();
+    let orig_enstow_editor = std::env::var("ENSTOW_EDITOR").ok();
+    let orig_visual = std::env::var("VISUAL").ok();
+    let orig_editor = std::env::var("EDITOR").ok();
+
+    std::env::remove_var("ENSTOW_AGE_KEY_FILE");
+    std::env::remove_var("SOPS_AGE_KEY_FILE");
+    std::env::remove_var("ENSTOW_RECIPIENTS");
+    std::env::remove_var("SOPS_AGE_RECIPIENTS");
+    std::env::remove_var("ENSTOW_EDITOR");
+    std::env::remove_var("VISUAL");
+    std::env::remove_var("EDITOR");
+
+    // 1. Fallback behavior: SOPS_* and VISUAL/EDITOR work when ENSTOW_* unset
+    std::env::set_var("SOPS_AGE_KEY_FILE", "/sops/key");
+    std::env::set_var("SOPS_AGE_RECIPIENTS", "sops_recip1, sops_recip2");
+    std::env::set_var("EDITOR", "editor_fallback");
+
+    assert_eq!(
+        resolve_age_key_file(None, None),
+        Some(PathBuf::from("/sops/key"))
+    );
+    assert_eq!(
+        resolve_recipients(&[], None),
+        vec!["sops_recip1".to_string(), "sops_recip2".to_string()]
+    );
+    assert_eq!(
+        resolve_editor(None, None),
+        Some("editor_fallback".to_string())
+    );
+
+    // 2. ENSTOW_* aliases take precedence over external vars
+    std::env::set_var("ENSTOW_AGE_KEY_FILE", "/enstow/key");
+    std::env::set_var("ENSTOW_RECIPIENTS", "enstow_recip1, enstow_recip2");
+    std::env::set_var("ENSTOW_EDITOR", "enstow_editor");
+    std::env::set_var("VISUAL", "visual_editor");
+
+    assert_eq!(
+        resolve_age_key_file(None, None),
+        Some(PathBuf::from("/enstow/key"))
+    );
+    assert_eq!(
+        resolve_recipients(&[], None),
+        vec!["enstow_recip1".to_string(), "enstow_recip2".to_string()]
+    );
+    assert_eq!(
+        resolve_editor(None, None),
+        Some("enstow_editor".to_string())
+    );
+
+    let empty_cli = CommonArgs::default();
+    let resolved = resolve_common_args(&empty_cli, None);
+    assert_eq!(resolved.age_key_file, Some(PathBuf::from("/enstow/key")));
+
+    // Clean up
+    std::env::remove_var("ENSTOW_AGE_KEY_FILE");
+    std::env::remove_var("SOPS_AGE_KEY_FILE");
+    std::env::remove_var("ENSTOW_RECIPIENTS");
+    std::env::remove_var("SOPS_AGE_RECIPIENTS");
+    std::env::remove_var("ENSTOW_EDITOR");
+    std::env::remove_var("VISUAL");
+    std::env::remove_var("EDITOR");
+
+    if let Some(v) = orig_enstow_age_key {
+        std::env::set_var("ENSTOW_AGE_KEY_FILE", v);
+    }
+    if let Some(v) = orig_sops_age_key {
+        std::env::set_var("SOPS_AGE_KEY_FILE", v);
+    }
+    if let Some(v) = orig_enstow_recipients {
+        std::env::set_var("ENSTOW_RECIPIENTS", v);
+    }
+    if let Some(v) = orig_sops_recipients {
+        std::env::set_var("SOPS_AGE_RECIPIENTS", v);
+    }
+    if let Some(v) = orig_enstow_editor {
+        std::env::set_var("ENSTOW_EDITOR", v);
+    }
+    if let Some(v) = orig_visual {
+        std::env::set_var("VISUAL", v);
+    }
+    if let Some(v) = orig_editor {
+        std::env::set_var("EDITOR", v);
     }
 }
