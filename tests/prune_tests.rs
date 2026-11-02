@@ -308,3 +308,41 @@ fn test_apply_with_prune_via_config_and_env() {
         std::env::set_var("ENSTOW_PRUNE", v);
     }
 }
+
+#[test]
+fn test_plan_prune_relative_stale_symlink() {
+    let parent = tempdir().unwrap();
+    let source_dir = parent.path().join("src");
+    let target_dir = parent.path().join("dst");
+    let pkg_dir = source_dir.join("pkg");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::create_dir_all(&target_dir).unwrap();
+
+    let file = pkg_dir.join("test.txt");
+    fs::write(&file, "test").unwrap();
+
+    let target_link = target_dir.join("test.txt");
+    let rel = std::path::Path::new("..")
+        .join("src")
+        .join("pkg")
+        .join("test.txt");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&rel, &target_link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&rel, &target_link).unwrap();
+
+    // Now remove file from source so it becomes stale
+    fs::remove_file(&file).unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir),
+        target: Some(target_dir),
+        packages: vec!["pkg".to_string()],
+        prune: true,
+        ..Default::default()
+    };
+
+    let stale_actions = enstow::stow::plan_prune(&args).unwrap();
+    assert_eq!(stale_actions.len(), 1);
+    assert_eq!(stale_actions[0].target(), target_link.as_path());
+}

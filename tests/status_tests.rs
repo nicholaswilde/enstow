@@ -166,3 +166,61 @@ fn test_secret_status_drift_detection_and_missing_keys() {
     let unverified_json = serde_json::to_string(&unverified_statuses).unwrap();
     assert!(unverified_json.contains("\"status\":\"unverified\""));
 }
+
+#[test]
+fn test_status_secret_conflict_missing_and_action_getters() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+    let key_file = key_dir.path().join("key.txt");
+
+    let secret_src = source_dir.path().join("app.env.age");
+    create_test_age_key_and_encrypted_file(&key_file, &secret_src, b"secret");
+
+    // 1. Conflict: secret target is a directory
+    let dir_tgt = target_dir.path().join("app.env");
+    fs::create_dir_all(&dir_tgt).unwrap();
+
+    let action_dir_conflict = enstow::stow::FileAction::Decrypt {
+        source: secret_src.clone(),
+        target: dir_tgt.clone(),
+    };
+    assert_eq!(action_dir_conflict.source(), secret_src.as_path());
+    assert_eq!(action_dir_conflict.target(), dir_tgt.as_path());
+
+    let statuses = check_status(&[action_dir_conflict], Some(&key_file)).unwrap();
+    assert_eq!(statuses[0].status, EntryStatus::Conflict);
+
+    // 2. Conflict: secret target is a symlink
+    fs::remove_dir(&dir_tgt).unwrap();
+    let dummy_link_src = source_dir.path().join("dummy.txt");
+    fs::write(&dummy_link_src, "dummy").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&dummy_link_src, &dir_tgt).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&dummy_link_src, &dir_tgt).unwrap();
+
+    let action_symlink_conflict = enstow::stow::FileAction::Decrypt {
+        source: secret_src.clone(),
+        target: dir_tgt.clone(),
+    };
+    let statuses = check_status(&[action_symlink_conflict], Some(&key_file)).unwrap();
+    assert_eq!(statuses[0].status, EntryStatus::Conflict);
+
+    // 3. Missing secret target
+    fs::remove_file(&dir_tgt).unwrap();
+    let action_missing = enstow::stow::FileAction::Decrypt {
+        source: secret_src.clone(),
+        target: dir_tgt.clone(),
+    };
+    let statuses = check_status(&[action_missing], Some(&key_file)).unwrap();
+    assert_eq!(statuses[0].status, EntryStatus::Missing);
+
+    // 4. FileAction::Symlink getters
+    let sym_action = enstow::stow::FileAction::Symlink {
+        source: dummy_link_src.clone(),
+        target: dir_tgt.clone(),
+    };
+    assert_eq!(sym_action.source(), dummy_link_src.as_path());
+    assert_eq!(sym_action.target(), dir_tgt.as_path());
+}

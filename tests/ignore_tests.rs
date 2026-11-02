@@ -210,3 +210,30 @@ fn test_ignore_patterns_additive_and_deduplicated() {
         ]
     );
 }
+
+#[test]
+fn test_ignore_mid_wildcard_pattern() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let matching_file = source_dir.path().join("app_staging_123.conf");
+    fs::write(&matching_file, "content").unwrap();
+    let non_matching_file = source_dir.path().join("app_staging_123.txt");
+    fs::write(&non_matching_file, "content").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        dry_run: true,
+        force: false,
+        prune: false,
+        age_key_file: None,
+        packages: Vec::new(),
+        ignore: vec!["app_*.conf".to_string()],
+        ..Default::default()
+    };
+
+    let plan = plan_stow(&args).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].target().file_name().unwrap(), "app_staging_123.txt");
+}

@@ -6,7 +6,10 @@ use enstow::crypto::edit_file_age;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn setup_age_key_and_file(key_path: &Path, secret_path: &Path, plaintext: &[u8]) {
     let key = age::x25519::Identity::generate();
@@ -31,7 +34,7 @@ fn compile_mock_editor(dir: &Path, content: Option<&str>, exit_code: i32) -> std
     });
     let code = match content {
         Some(text) => format!(
-            "fn main() {{ let p = std::env::args().nth(1).unwrap(); std::fs::write(p, {:?}).unwrap(); std::process::exit({}); }}",
+            "fn main() {{ let p = std::env::args().last().unwrap(); std::fs::write(p, {:?}).unwrap(); std::process::exit({}); }}",
             text, exit_code
         ),
         None => format!("fn main() {{ std::process::exit({}); }}", exit_code),
@@ -137,4 +140,56 @@ fn test_edit_file_age_nonexistent_file_errors() {
 
     let result = edit_file_age(&missing_file, &[], Some(&key_file), Some("true"));
     assert!(result.is_err());
+}
+
+#[test]
+fn test_edit_file_age_env_editor_and_whitespace_args() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let dir = tempdir().unwrap();
+    let key_file = dir.path().join("key.txt");
+    let secret_file = dir.path().join("app.env.age");
+    setup_age_key_and_file(&key_file, &secret_file, b"INITIAL=1\n");
+
+    let editor_bin = compile_mock_editor(dir.path(), Some("FROM_ENV_EDITOR=2\n"), 0);
+
+    let orig_enstow_ed = std::env::var("ENSTOW_EDITOR").ok();
+    let orig_visual = std::env::var("VISUAL").ok();
+    let orig_editor = std::env::var("EDITOR").ok();
+
+    // 1. ENSTOW_EDITOR with split whitespace command
+    let editor_cmd = format!("{} --some-unused-arg", editor_bin.display());
+    std::env::set_var("ENSTOW_EDITOR", &editor_cmd);
+    std::env::remove_var("VISUAL");
+    std::env::remove_var("EDITOR");
+
+    let modified = edit_file_age(&secret_file, &[], Some(&key_file), None).unwrap();
+    assert!(modified);
+    let decrypted = enstow::crypto::decrypt_age(&secret_file, Some(&key_file)).unwrap();
+    assert_eq!(decrypted, b"FROM_ENV_EDITOR=2\n");
+
+    // 2. VISUAL fallback
+    std::env::remove_var("ENSTOW_EDITOR");
+    std::env::set_var("VISUAL", editor_bin.to_str().unwrap());
+    let modified = edit_file_age(&secret_file, &[], Some(&key_file), None).unwrap();
+    // content unchanged because editor output matches existing
+    assert!(!modified);
+
+    // 3. EDITOR fallback
+    std::env::remove_var("VISUAL");
+    std::env::set_var("EDITOR", editor_bin.to_str().unwrap());
+    let modified = edit_file_age(&secret_file, &[], Some(&key_file), None).unwrap();
+    assert!(!modified);
+
+    std::env::remove_var("ENSTOW_EDITOR");
+    std::env::remove_var("VISUAL");
+    std::env::remove_var("EDITOR");
+    if let Some(v) = orig_enstow_ed {
+        std::env::set_var("ENSTOW_EDITOR", v);
+    }
+    if let Some(v) = orig_visual {
+        std::env::set_var("VISUAL", v);
+    }
+    if let Some(v) = orig_editor {
+        std::env::set_var("EDITOR", v);
+    }
 }

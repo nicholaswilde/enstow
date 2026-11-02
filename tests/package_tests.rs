@@ -226,3 +226,22 @@ fn test_multi_package_stow_unstow_status_integration() {
     assert!(!target_zshrc.exists());
     assert!(target_token.exists());
 }
+
+#[test]
+fn test_package_not_a_directory_errors() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let not_a_dir = source_dir.path().join("not_a_dir");
+    fs::write(&not_a_dir, "regular file").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        packages: vec!["not_a_dir".to_string()],
+        ..Default::default()
+    };
+
+    let err = plan_stow(&args).unwrap_err();
+    assert!(err.to_string().contains("is not a directory"));
+}

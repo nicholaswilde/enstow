@@ -98,3 +98,36 @@ fn test_generate_completions_default_is_dynamic() {
     assert!(out.contains("_clap_complete_enstow"));
     assert!(out.contains("complete -o nospace -o bashdefault"));
 }
+
+struct FailOnceWriter {
+    failed: bool,
+    buf: Vec<u8>,
+}
+
+impl std::io::Write for FailOnceWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.failed {
+            self.failed = true;
+            return Err(std::io::Error::other(
+                "forced failure for dynamic completion",
+            ));
+        }
+        self.buf.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn test_generate_completions_fallback_on_error() {
+    let mut writer = FailOnceWriter {
+        failed: false,
+        buf: Vec::new(),
+    };
+    generate_completions(Shell::Bash, &mut writer);
+    let out = String::from_utf8(writer.buf).expect("valid utf-8 fallback completion script");
+    assert!(out.contains("complete -F _enstow"));
+}

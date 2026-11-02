@@ -1,7 +1,7 @@
 use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{
-    load_config, resolve_age_key_file, resolve_common_args, resolve_editor,
+    load_config, parse_bool_env, resolve_age_key_file, resolve_common_args, resolve_editor,
     resolve_ignore_patterns, resolve_json, resolve_log_level, resolve_recipients, ConfigFile,
     ConfigFormat,
 };
@@ -873,5 +873,183 @@ fn test_log_level_precedence_hierarchy() {
     }
     if let Some(v) = orig_rust_log {
         std::env::set_var("RUST_LOG", v);
+    }
+}
+
+#[test]
+fn test_config_error_paths_and_fallbacks() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    // 1. Unsupported configuration file extension (file must exist to read content)
+    let tmp_file = tmp.path().join("config.unknown");
+    std::fs::write(&tmp_file, "some content").unwrap();
+    let err = ConfigFile::load_from_path(&tmp_file).unwrap_err();
+    assert!(err.to_string().contains("Unsupported configuration format"));
+    let err = load_config(Some(tmp.path())).unwrap_err();
+    assert!(err.to_string().contains("is not a regular file"));
+
+    // 4. ENSTOW_CONFIG pointing to directory
+    let orig_enstow_cfg = std::env::var("ENSTOW_CONFIG").ok();
+    std::env::set_var("ENSTOW_CONFIG", tmp.path());
+    let err = load_config(None).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("from ENSTOW_CONFIG is not a regular file"));
+
+    // 5. ENSTOW_CONFIG pointing to nonexistent file
+    std::env::set_var("ENSTOW_CONFIG", "nonexistent_from_env.toml");
+    let err = load_config(None).unwrap_err();
+    assert!(err.to_string().contains("from ENSTOW_CONFIG not found"));
+
+    std::env::remove_var("ENSTOW_CONFIG");
+    if let Some(v) = orig_enstow_cfg {
+        std::env::set_var("ENSTOW_CONFIG", v);
+    }
+
+    // 6. parse_bool_env with invalid value
+    std::env::set_var("ENSTOW_TEST_INVALID_BOOL", "not_a_bool");
+    assert_eq!(parse_bool_env("ENSTOW_TEST_INVALID_BOOL"), None);
+    std::env::remove_var("ENSTOW_TEST_INVALID_BOOL");
+
+    // 7. resolve_json with config without json or output set
+    let empty_cfg = ConfigFile::default();
+    assert!(!resolve_json(false, Some(&empty_cfg)));
+
+    // 8. resolve_editor fallbacks with empty env and empty strings
+    let orig_enstow_ed = std::env::var("ENSTOW_EDITOR").ok();
+    let orig_visual = std::env::var("VISUAL").ok();
+    let orig_editor = std::env::var("EDITOR").ok();
+
+    std::env::remove_var("ENSTOW_EDITOR");
+    std::env::remove_var("VISUAL");
+    std::env::remove_var("EDITOR");
+
+    // All empty -> None
+    assert_eq!(resolve_editor(Some("   "), None), None);
+    assert_eq!(resolve_editor(None, None), None);
+
+    // VISUAL fallback
+    std::env::set_var("VISUAL", "vis_editor");
+    assert_eq!(resolve_editor(None, None), Some("vis_editor".to_string()));
+    std::env::set_var("VISUAL", "  ");
+    assert_eq!(resolve_editor(None, None), None);
+
+    // EDITOR fallback
+    std::env::set_var("EDITOR", "std_editor");
+    assert_eq!(resolve_editor(None, None), Some("std_editor".to_string()));
+    std::env::set_var("EDITOR", "  ");
+    assert_eq!(resolve_editor(None, None), None);
+
+    // Config editor fallback with empty string
+    let cfg_empty_ed = ConfigFile {
+        editor: Some("   ".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(resolve_editor(None, Some(&cfg_empty_ed)), None);
+
+    std::env::remove_var("ENSTOW_EDITOR");
+    std::env::remove_var("VISUAL");
+    std::env::remove_var("EDITOR");
+    if let Some(v) = orig_enstow_ed {
+        std::env::set_var("ENSTOW_EDITOR", v);
+    }
+    if let Some(v) = orig_visual {
+        std::env::set_var("VISUAL", v);
+    }
+    if let Some(v) = orig_editor {
+        std::env::set_var("EDITOR", v);
+    }
+
+    // 9. resolve_recipients fallbacks with empty env vars
+    let orig_recs = std::env::var("ENSTOW_RECIPIENTS").ok();
+    let orig_sops_recs = std::env::var("SOPS_AGE_RECIPIENTS").ok();
+
+    std::env::set_var("ENSTOW_RECIPIENTS", "   ");
+    std::env::set_var("SOPS_AGE_RECIPIENTS", "   ");
+    let cfg_no_recips = ConfigFile {
+        recipients: Some(enstow::config::RecipientsConfig::List(vec![])),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_recipients(&[], Some(&cfg_no_recips)),
+        Vec::<String>::new()
+    );
+
+    std::env::remove_var("ENSTOW_RECIPIENTS");
+    std::env::remove_var("SOPS_AGE_RECIPIENTS");
+    if let Some(v) = orig_recs {
+        std::env::set_var("ENSTOW_RECIPIENTS", v);
+    }
+    if let Some(v) = orig_sops_recs {
+        std::env::set_var("SOPS_AGE_RECIPIENTS", v);
+    }
+
+    // 10. resolve_age_key_file with empty env vars
+    let orig_k1 = std::env::var("ENSTOW_AGE_KEY_FILE").ok();
+    let orig_k2 = std::env::var("SOPS_AGE_KEY_FILE").ok();
+
+    std::env::set_var("ENSTOW_AGE_KEY_FILE", "   ");
+    std::env::set_var("SOPS_AGE_KEY_FILE", "   ");
+    let cfg_key = ConfigFile {
+        age_key_file: Some(PathBuf::from("/cfg/key.txt")),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_age_key_file(None, Some(&cfg_key)),
+        Some(PathBuf::from("/cfg/key.txt"))
+    );
+
+    std::env::remove_var("ENSTOW_AGE_KEY_FILE");
+    std::env::remove_var("SOPS_AGE_KEY_FILE");
+    if let Some(v) = orig_k1 {
+        std::env::set_var("ENSTOW_AGE_KEY_FILE", v);
+    }
+    if let Some(v) = orig_k2 {
+        std::env::set_var("SOPS_AGE_KEY_FILE", v);
+    }
+
+    // 11. resolve_common_args with empty whitespace env vars falling back to config
+    let orig_src = std::env::var("ENSTOW_SOURCE").ok();
+    let orig_tgt = std::env::var("ENSTOW_TARGET").ok();
+    let orig_pkgs = std::env::var("ENSTOW_PACKAGES").ok();
+    let orig_bdir = std::env::var("ENSTOW_BACKUP_DIR").ok();
+
+    std::env::set_var("ENSTOW_SOURCE", "   ");
+    std::env::set_var("ENSTOW_TARGET", "   ");
+    std::env::set_var("ENSTOW_PACKAGES", "   ");
+    std::env::set_var("ENSTOW_BACKUP_DIR", "   ");
+
+    let cfg_env_fallback = ConfigFile {
+        source: Some(PathBuf::from("/fallback/source")),
+        target: Some(PathBuf::from("/fallback/target")),
+        packages: Some(vec!["fallback_pkg".to_string()]),
+        backup_dir: Some(PathBuf::from("/fallback/backup")),
+        ..Default::default()
+    };
+
+    let empty_cli = CommonArgs::default();
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg_env_fallback));
+    assert_eq!(resolved.source, PathBuf::from("/fallback/source"));
+    assert_eq!(resolved.target, PathBuf::from("/fallback/target"));
+    assert_eq!(resolved.packages, vec!["fallback_pkg".to_string()]);
+    assert_eq!(resolved.backup_dir, PathBuf::from("/fallback/backup"));
+
+    std::env::remove_var("ENSTOW_SOURCE");
+    std::env::remove_var("ENSTOW_TARGET");
+    std::env::remove_var("ENSTOW_PACKAGES");
+    std::env::remove_var("ENSTOW_BACKUP_DIR");
+    if let Some(v) = orig_src {
+        std::env::set_var("ENSTOW_SOURCE", v);
+    }
+    if let Some(v) = orig_tgt {
+        std::env::set_var("ENSTOW_TARGET", v);
+    }
+    if let Some(v) = orig_pkgs {
+        std::env::set_var("ENSTOW_PACKAGES", v);
+    }
+    if let Some(v) = orig_bdir {
+        std::env::set_var("ENSTOW_BACKUP_DIR", v);
     }
 }
