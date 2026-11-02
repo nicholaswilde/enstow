@@ -71,6 +71,12 @@ tasks:
     cmds:
       - cargo run -- --help
 
+  man:
+    desc: Generate UNIX roff man page (assets/enstow.1)
+    cmds:
+      - mkdir -p assets
+      - cargo run -- man > assets/enstow.1
+
   check:
     desc: Check code for errors without generating binary
     cmds:

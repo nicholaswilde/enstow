@@ -1,4 +1,5 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
@@ -112,10 +113,19 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Generate UNIX roff man page
+    Man,
 }
 
 pub fn default_target_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn generate_manpage(writer: &mut dyn Write) -> anyhow::Result<()> {
+    let cmd = Cli::command();
+    let man = clap_mangen::Man::new(cmd);
+    man.render(writer)
+        .map_err(|e| anyhow::anyhow!("Failed rendering man page: {e}"))
 }

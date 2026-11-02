@@ -116,6 +116,10 @@ fn main() -> anyhow::Result<()> {
                 println!("No changes made to {}", file.display());
             }
         }
+        Some(Commands::Man) => {
+            let mut stdout = std::io::stdout().lock();
+            enstow::cli::generate_manpage(&mut stdout)?;
+        }
         None => {
             // Default to applying with root common args
             let common =
