@@ -63,6 +63,10 @@ pub struct CommonArgs {
     #[arg(short, long)]
     pub force: bool,
 
+    /// Prune stale symlinks for managed packages during apply
+    #[arg(long)]
+    pub prune: bool,
+
     /// Explicit path to age identity key file
     #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,

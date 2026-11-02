@@ -25,6 +25,7 @@ fn test_skip_existing_identical_symlink() {
         dry_run: false,
         age_key_file: None,
         force: false,
+        prune: false,
         packages: Vec::new(),
         ignore: Vec::new(),
     };

@@ -45,6 +45,7 @@ fn test_end_to_end_nested_stow_with_mixed_regular_and_age_files() {
         target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
+        prune: false,
         age_key_file: Some(key_file.clone()),
         packages: Vec::new(),
         ignore: Vec::new(),
@@ -153,6 +154,7 @@ force = false
         target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
+        prune: false,
         ..Default::default()
     };
 
@@ -194,6 +196,7 @@ force = false
         target: Some(target_dir.path().to_path_buf()),
         dry_run: false,
         force: false,
+        prune: false,
         ..Default::default()
     };
     let resolved_no_force =

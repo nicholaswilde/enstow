@@ -252,6 +252,7 @@ recipients = ["recipient_config"]
         target: Some(PathBuf::from("/from/cli/target")),
         dry_run: true,
         force: true,
+        prune: false,
         age_key_file: Some(PathBuf::from("/from/cli/key")),
         packages: vec!["pkg_cli".to_string()],
         ignore: vec![],
@@ -474,6 +475,7 @@ force = false
     let cli_flags = CommonArgs {
         dry_run: true,
         force: true,
+        prune: false,
         ..Default::default()
     };
     let resolved = resolve_common_args(&cli_flags, Some(&config_false));

@@ -58,6 +58,7 @@ pub struct ConfigFile {
     pub target: Option<PathBuf>,
     pub dry_run: Option<bool>,
     pub force: Option<bool>,
+    pub prune: Option<bool>,
     pub age_key_file: Option<PathBuf>,
     pub recipients: Option<RecipientsConfig>,
     pub packages: Option<Vec<String>>,
@@ -205,6 +206,7 @@ pub struct ResolvedCommonArgs {
     pub target: PathBuf,
     pub dry_run: bool,
     pub force: bool,
+    pub prune: bool,
     pub age_key_file: Option<PathBuf>,
     pub packages: Vec<String>,
     pub ignore: Vec<String>,
@@ -217,6 +219,7 @@ impl ResolvedCommonArgs {
             target: Some(self.target.clone()),
             dry_run: self.dry_run,
             force: self.force,
+            prune: self.prune,
             age_key_file: self.age_key_file.clone(),
             packages: self.packages.clone(),
             ignore: self.ignore.clone(),
@@ -304,11 +307,21 @@ pub fn resolve_common_args(
         config.and_then(|c| c.force).unwrap_or_default()
     };
 
+    // 8. Prune precedence: CLI (--prune) > ENSTOW_PRUNE > Config > Default (false)
+    let prune = if cli_args.prune {
+        true
+    } else if let Some(env_prune) = parse_bool_env("ENSTOW_PRUNE") {
+        env_prune
+    } else {
+        config.and_then(|c| c.prune).unwrap_or_default()
+    };
+
     ResolvedCommonArgs {
         source,
         target,
         dry_run,
         force,
+        prune,
         age_key_file,
         packages,
         ignore,

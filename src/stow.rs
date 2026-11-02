@@ -199,6 +199,14 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
 
 pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let mut actions = plan_stow(args)?;
+    let stale_links = plan_prune(args)?;
+    actions.extend(stale_links);
+    Ok(actions)
+}
+
+/// Plan removal of stale symlinks belonging to managed packages that are no longer active dotfiles.
+pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
+    let active_actions = plan_stow(args)?;
 
     let source_path = args.source_path();
     let target_path = args.target_path();
@@ -225,6 +233,8 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let target_canonical = target_path
         .canonicalize()
         .unwrap_or_else(|_| target_path.clone());
+
+    let mut stale_actions = Vec::new();
 
     if target_canonical.is_dir() {
         for entry in WalkDir::new(&target_canonical)
@@ -266,7 +276,7 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
                     });
 
                     if belongs_to_pkg {
-                        let already_active = actions.iter().any(|a| {
+                        let already_active = active_actions.iter().any(|a| {
                             let t = a.target();
                             t == symlink_path
                                 || normalize_path(t) == normalize_path(symlink_path)
@@ -275,7 +285,7 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
                         });
 
                         if !already_active {
-                            actions.push(FileAction::Symlink {
+                            stale_actions.push(FileAction::Symlink {
                                 source: full_dest,
                                 target: symlink_path.to_path_buf(),
                             });
@@ -286,7 +296,7 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
         }
     }
 
-    Ok(actions)
+    Ok(stale_actions)
 }
 
 fn is_stale_scan_ignored_dir(name: &str) -> bool {
@@ -626,6 +636,7 @@ mod tests {
             target: Some(target_dir.path().to_path_buf()),
             dry_run: true,
             force: false,
+            prune: false,
             age_key_file: None,
             packages: Vec::new(),
             ignore: Vec::new(),

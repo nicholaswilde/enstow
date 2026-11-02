@@ -18,6 +18,10 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Apply(args)) => {
             let common =
                 enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+            if common.prune {
+                let stale_actions = stow::plan_prune(&common)?;
+                stow::execute_unstow_plan(&stale_actions, &common.target_path(), common.dry_run)?;
+            }
             let actions = stow::plan_stow(&common)?;
             stow::execute_plan(
                 &actions,
