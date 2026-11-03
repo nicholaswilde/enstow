@@ -61,24 +61,28 @@ echo "Running pre-release validation (check & test)..."
 task check
 task test
 
-echo "Validation passed. Bumping version in Cargo.toml..."
-python3 -c '
+if [ "$CURRENT_VER" != "$NEW_VER" ]; then
+    echo "Validation passed. Bumping version in Cargo.toml..."
+    python3 -c '
 import pathlib, re, sys
 p = pathlib.Path("Cargo.toml")
 new_ver = sys.argv[1]
 p.write_text(re.sub(r"^version = \"[^\"]+\"", f"version = \"{new_ver}\"", p.read_text(), count=1, flags=re.MULTILINE))
 ' "$NEW_VER"
 
-cargo check --quiet
+    cargo check --quiet
 
-echo "Checking git status..."
-if [ -z "$(git status --porcelain Cargo.toml Cargo.lock)" ]; then
-    echo "Error: Cargo.toml or Cargo.lock was not modified."
-    exit 1
+    echo "Checking git status..."
+    if [ -z "$(git status --porcelain Cargo.toml Cargo.lock)" ]; then
+        echo "Error: Cargo.toml or Cargo.lock was not modified."
+        exit 1
+    fi
+
+    git add Cargo.toml Cargo.lock
+    git commit -m "chore(release): bump version to $NEW_TAG"
+else
+    echo "Validation passed. Cargo.toml already matches target version $NEW_VER."
 fi
-
-git add Cargo.toml Cargo.lock
-git commit -m "chore(release): bump version to $NEW_TAG"
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "Error: Working directory not clean after bumping version."
