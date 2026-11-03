@@ -1,6 +1,6 @@
 [package]
 name = "enstow"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Nicholas Wilde"]
 description = "A secret-aware dotfile manager combining stow symlinking with sops and age decryption"
