@@ -52,6 +52,57 @@ impl RecipientsConfig {
     }
 }
 
+/// Flexible representation of permission modes in configuration files (string octal or integer).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PermissionMode {
+    Str(String),
+    Int(u32),
+}
+
+impl PermissionMode {
+    pub fn to_mode(&self) -> Result<u32> {
+        match self {
+            Self::Str(s) => parse_mode_str(s),
+            Self::Int(n) => parse_mode_int(*n),
+        }
+    }
+}
+
+pub fn parse_mode_str(s: &str) -> Result<u32> {
+    let clean = s.trim();
+    let clean = clean.strip_prefix("0o").unwrap_or(clean);
+    let octal_str = if clean.len() > 1 && clean.starts_with('0') {
+        clean.trim_start_matches('0')
+    } else {
+        clean
+    };
+    let octal_str = if octal_str.is_empty() { "0" } else { octal_str };
+    u32::from_str_radix(octal_str, 8)
+        .with_context(|| format!("Invalid octal permission mode '{s}'"))
+}
+
+pub fn parse_mode_int(n: u32) -> Result<u32> {
+    let s = n.to_string();
+    if n > 0o777 && s.chars().all(|c| ('0'..='7').contains(&c)) {
+        if let Ok(octal_val) = u32::from_str_radix(&s, 8) {
+            return Ok(octal_val);
+        }
+    }
+    if n <= 0o7777 {
+        Ok(n)
+    } else {
+        anyhow::bail!("Permission mode {n} exceeds maximum unix mode 07777");
+    }
+}
+
+/// Configuration for a specific dotfile package.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PackageConfig {
+    #[serde(default)]
+    pub permissions: BTreeMap<String, PermissionMode>,
+}
+
 /// Configuration for a package profile.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProfileConfig {
@@ -80,6 +131,9 @@ pub struct ConfigFile {
     pub mask_secrets: Option<bool>,
     pub default_profile: Option<String>,
     pub profiles: Option<BTreeMap<String, ProfileConfig>>,
+    pub permissions: Option<BTreeMap<String, PermissionMode>>,
+    pub package: Option<BTreeMap<String, PackageConfig>>,
+    pub package_permissions: Option<BTreeMap<String, BTreeMap<String, PermissionMode>>>,
 }
 
 impl ConfigFile {
@@ -208,6 +262,63 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Option<(PathBuf, Conf
     ConfigFile::load_default()
 }
 
+/// Compiled permission rules for setting target file modes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PermissionsConfig {
+    pub rules: Vec<(String, u32, Option<String>)>,
+}
+
+impl PermissionsConfig {
+    pub fn new() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    pub fn add_rule(&mut self, pattern: String, mode: u32, package: Option<String>) {
+        self.rules.push((pattern, mode, package));
+    }
+
+    pub fn resolve_mode(
+        &self,
+        target: &Path,
+        source: Option<&Path>,
+        target_root: Option<&Path>,
+    ) -> u32 {
+        for (pattern, mode, package) in &self.rules {
+            if let Some(pkg) = package {
+                let matches_pkg = source
+                    .is_some_and(|src| src.components().any(|c| c.as_os_str() == pkg.as_str()));
+                if !matches_pkg {
+                    continue;
+                }
+            }
+
+            if let Ok(glob) = globset::GlobBuilder::new(pattern)
+                .literal_separator(false)
+                .backslash_escape(true)
+                .build()
+            {
+                let matcher = glob.compile_matcher();
+                if matcher.is_match(target) {
+                    return *mode;
+                }
+                if let Some(root) = target_root {
+                    if let Ok(rel) = target.strip_prefix(root) {
+                        if matcher.is_match(rel) {
+                            return *mode;
+                        }
+                    }
+                }
+                if let Some(file_name) = target.file_name() {
+                    if matcher.is_match(Path::new(file_name)) {
+                        return *mode;
+                    }
+                }
+            }
+        }
+        0o600
+    }
+}
+
 /// Fully resolved common arguments after evaluating the precedence chain:
 /// 1. Command Line Arguments
 /// 2. Environment Variables
@@ -226,6 +337,7 @@ pub struct ResolvedCommonArgs {
     pub ignore: Vec<String>,
     pub backup: bool,
     pub backup_dir: PathBuf,
+    pub permissions: PermissionsConfig,
 }
 
 impl ResolvedCommonArgs {
@@ -470,6 +582,9 @@ pub fn resolve_common_args(
         target.join(".enstow-backup")
     };
 
+    // 11. Target permissions: from Config permissions and package_permissions
+    let permissions = resolve_permissions(config)?;
+
     Ok(ResolvedCommonArgs {
         source,
         target,
@@ -482,7 +597,42 @@ pub fn resolve_common_args(
         ignore,
         backup,
         backup_dir,
+        permissions,
     })
+}
+
+/// Resolve permission rules from configuration file.
+pub fn resolve_permissions(config: Option<&ConfigFile>) -> Result<PermissionsConfig> {
+    let mut result = PermissionsConfig::new();
+
+    if let Some(cfg) = config {
+        if let Some(perms) = &cfg.permissions {
+            for (pattern, mode_repr) in perms {
+                let mode = mode_repr.to_mode()?;
+                result.add_rule(pattern.clone(), mode, None);
+            }
+        }
+
+        if let Some(packages) = &cfg.package {
+            for (pkg_name, pkg_cfg) in packages {
+                for (pattern, mode_repr) in &pkg_cfg.permissions {
+                    let mode = mode_repr.to_mode()?;
+                    result.add_rule(pattern.clone(), mode, Some(pkg_name.clone()));
+                }
+            }
+        }
+
+        if let Some(package_perms) = &cfg.package_permissions {
+            for (pkg_name, perms) in package_perms {
+                for (pattern, mode_repr) in perms {
+                    let mode = mode_repr.to_mode()?;
+                    result.add_rule(pattern.clone(), mode, Some(pkg_name.clone()));
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Parse a boolean value from an environment variable ("1", "true", "0", "false").

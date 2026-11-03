@@ -60,3 +60,12 @@
 
 # Mask sensitive secret contents in diff output ($ENSTOW_MASK_SECRETS or --mask-secrets)
 # mask_secrets = false
+
+# Target file permissions for decrypted secrets (glob patterns, defaults to "0600")
+# [permissions]
+# "**/*.sh" = "0755"
+# "**/*.key" = "0400"
+#
+# Per-package permission overrides
+# [package.ssh.permissions]
+# "id_ed25519" = "0600"

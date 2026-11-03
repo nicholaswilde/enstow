@@ -378,6 +378,29 @@ pub fn execute_plan_with_backup(
     backup_dir: Option<&Path>,
     target_root: Option<&Path>,
 ) -> Result<(), EnstowError> {
+    execute_plan_with_backup_and_permissions(
+        actions,
+        dry_run,
+        age_key_file,
+        force,
+        backup,
+        backup_dir,
+        target_root,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_plan_with_backup_and_permissions(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+    force: bool,
+    backup: bool,
+    backup_dir: Option<&Path>,
+    target_root: Option<&Path>,
+    permissions: Option<&crate::config::PermissionsConfig>,
+) -> Result<(), EnstowError> {
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
@@ -432,6 +455,9 @@ pub fn execute_plan_with_backup(
                 create_symlink(source, target, force)?;
             }
             FileAction::Decrypt { source, target } => {
+                let mode = permissions
+                    .map(|p| p.resolve_mode(target, Some(source), target_root))
+                    .unwrap_or(0o600);
                 let target_exists = std::fs::symlink_metadata(target).is_ok();
                 if target_exists {
                     if !force && !backup {
@@ -454,9 +480,10 @@ pub fn execute_plan_with_backup(
                             }
                         }
                         println!(
-                            "[dry-run] DECRYPT {} -> {} (mode 0600)",
+                            "[dry-run] DECRYPT {} -> {} (mode {:04o})",
                             source.display(),
-                            target.display()
+                            target.display(),
+                            mode
                         );
                         continue;
                     }
@@ -472,9 +499,10 @@ pub fn execute_plan_with_backup(
                     }
                 } else if dry_run {
                     println!(
-                        "[dry-run] DECRYPT {} -> {} (mode 0600)",
+                        "[dry-run] DECRYPT {} -> {} (mode {:04o})",
                         source.display(),
-                        target.display()
+                        target.display(),
+                        mode
                     );
                     continue;
                 }
@@ -485,7 +513,7 @@ pub fn execute_plan_with_backup(
                 })?;
                 let plaintext =
                     crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
-                crate::crypto::write_secure_file(target, &plaintext, force)?;
+                crate::crypto::write_secure_file_with_mode(target, &plaintext, force, mode)?;
             }
         }
     }

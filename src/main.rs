@@ -20,14 +20,14 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Commands::Apply(args)) => {
-            let common =
-                enstow::config::resolve_common_args(&args, config.as_ref())?.to_common_args();
+            let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
+            let common = resolved.to_common_args();
             if common.prune {
                 let stale_actions = stow::plan_prune(&common)?;
                 stow::execute_unstow_plan(&stale_actions, &common.target_path(), common.dry_run)?;
             }
             let actions = stow::plan_stow(&common)?;
-            stow::execute_plan_with_backup(
+            stow::execute_plan_with_backup_and_permissions(
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -35,15 +35,16 @@ fn main() -> anyhow::Result<()> {
                 common.backup,
                 Some(&common.backup_dir_path()),
                 Some(&common.target_path()),
+                Some(&resolved.permissions),
             )?;
         }
         Some(Commands::Restow(args)) => {
-            let common =
-                enstow::config::resolve_common_args(&args, config.as_ref())?.to_common_args();
+            let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
+            let common = resolved.to_common_args();
             let unstow_actions = stow::plan_unstow(&common)?;
             stow::execute_unstow_plan(&unstow_actions, &common.target_path(), common.dry_run)?;
             let apply_actions = stow::plan_stow(&common)?;
-            stow::execute_plan_with_backup(
+            stow::execute_plan_with_backup_and_permissions(
                 &apply_actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -51,6 +52,7 @@ fn main() -> anyhow::Result<()> {
                 common.backup,
                 Some(&common.backup_dir_path()),
                 Some(&common.target_path()),
+                Some(&resolved.permissions),
             )?;
         }
         Some(Commands::Unstow(args)) => {
@@ -179,10 +181,10 @@ fn main() -> anyhow::Result<()> {
         }
         None => {
             // Default to applying with root common args
-            let common =
-                enstow::config::resolve_common_args(&cli.common, config.as_ref())?.to_common_args();
+            let resolved = enstow::config::resolve_common_args(&cli.common, config.as_ref())?;
+            let common = resolved.to_common_args();
             let actions = stow::plan_stow(&common)?;
-            stow::execute_plan_with_backup(
+            stow::execute_plan_with_backup_and_permissions(
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -190,6 +192,7 @@ fn main() -> anyhow::Result<()> {
                 common.backup,
                 Some(&common.backup_dir_path()),
                 Some(&common.target_path()),
+                Some(&resolved.permissions),
             )?;
         }
     }

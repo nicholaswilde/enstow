@@ -367,6 +367,15 @@ pub fn encrypt_file_age(
 }
 
 pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(), EnstowError> {
+    write_secure_file_with_mode(path, content, force, 0o600)
+}
+
+pub fn write_secure_file_with_mode(
+    path: &Path,
+    content: &[u8],
+    force: bool,
+    mode: u32,
+) -> Result<(), EnstowError> {
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         if !force {
             return Err(EnstowError::Collision {
@@ -398,12 +407,13 @@ pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(),
         use std::fs::OpenOptions;
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
 
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .mode(0o600)
+            .mode(mode)
             .open(path)
             .map_err(|e| EnstowError::Io {
                 path: path.to_path_buf(),
@@ -414,10 +424,13 @@ pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(),
             path: path.to_path_buf(),
             source: e,
         })?;
+
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
     }
 
     #[cfg(not(unix))]
     {
+        let _ = mode;
         std::fs::write(path, content).map_err(|e| EnstowError::Io {
             path: path.to_path_buf(),
             source: e,
