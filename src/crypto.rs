@@ -66,6 +66,16 @@ pub fn decrypt_age(path: &Path, age_key_file: Option<&Path>) -> Result<Vec<u8>, 
                 if let Ok(mut ids) = identity_file.into_identities() {
                     identities.append(&mut ids);
                 }
+            } else if let Ok(file) = File::open(kp) {
+                if let Ok(ssh_id) = age::ssh::Identity::from_buffer(
+                    std::io::BufReader::new(file),
+                    Some(kp.to_string_lossy().into_owned()),
+                ) {
+                    match ssh_id {
+                        age::ssh::Identity::Unsupported(_) => {}
+                        id => identities.push(Box::new(id.with_callbacks(SshCallbacks))),
+                    }
+                }
             }
         }
     }
@@ -133,6 +143,134 @@ pub fn decrypt_sops(path: &Path) -> Result<Vec<u8>, EnstowError> {
     Ok(output.stdout)
 }
 
+#[derive(Clone)]
+struct SshCallbacks;
+
+impl age::Callbacks for SshCallbacks {
+    fn display_message(&self, _message: &str) {}
+    fn confirm(&self, _message: &str, _yes_string: &str, _no_string: Option<&str>) -> Option<bool> {
+        None
+    }
+    fn request_public_string(&self, _description: &str) -> Option<String> {
+        None
+    }
+    fn request_passphrase(&self, _description: &str) -> Option<age::secrecy::SecretString> {
+        std::env::var("ENSTOW_SSH_PASSPHRASE")
+            .or_else(|_| std::env::var("SSH_PASSPHRASE"))
+            .ok()
+            .map(age::secrecy::SecretString::from)
+    }
+}
+
+fn load_recipients_from_str(r: &str) -> Result<Vec<Box<dyn age::Recipient + Send>>, EnstowError> {
+    use std::str::FromStr;
+    let trimmed = r.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 1. Try parsing directly as an age recipient
+    if let Ok(pk) = age::x25519::Recipient::from_str(trimmed) {
+        return Ok(vec![Box::new(pk)]);
+    }
+
+    // 2. Try parsing directly as an SSH recipient
+    if let Ok(pk) = age::ssh::Recipient::from_str(trimmed) {
+        return Ok(vec![Box::new(pk)]);
+    }
+
+    // 3. Check if r is a file path
+    let file_path = if trimmed.starts_with("~/") {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(&trimmed[2..]))
+            .unwrap_or_else(|| PathBuf::from(trimmed))
+    } else {
+        PathBuf::from(trimmed)
+    };
+
+    if file_path.is_file() {
+        return load_recipients_from_file(&file_path);
+    }
+
+    Err(EnstowError::Config(format!(
+        "Failed to parse recipient '{trimmed}': not a valid age or SSH public key (or recipient file)"
+    )))
+}
+
+fn load_recipients_from_file(
+    path: &Path,
+) -> Result<Vec<Box<dyn age::Recipient + Send>>, EnstowError> {
+    use std::str::FromStr;
+
+    // 1. Try as age IdentityFile
+    if let Ok(id_file) = age::IdentityFile::from_file(path.to_string_lossy().into_owned()) {
+        if let Ok(recips) = id_file.to_recipients() {
+            if !recips.is_empty() {
+                return Ok(recips);
+            }
+        }
+    }
+
+    // 2. If a corresponding .pub file exists, try reading public key lines from it
+    let pub_path = PathBuf::from(format!("{}.pub", path.display()));
+    if pub_path.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&pub_path) {
+            let mut list: Vec<Box<dyn age::Recipient + Send>> = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Ok(pk) = age::ssh::Recipient::from_str(line) {
+                    list.push(Box::new(pk));
+                } else if let Ok(pk) = age::x25519::Recipient::from_str(line) {
+                    list.push(Box::new(pk));
+                }
+            }
+            if !list.is_empty() {
+                return Ok(list);
+            }
+        }
+    }
+
+    // 3. Try parsing as SSH private key identity and convert to recipient
+    if let Ok(file) = File::open(path) {
+        if let Ok(ssh_id) = age::ssh::Identity::from_buffer(
+            std::io::BufReader::new(file),
+            Some(path.to_string_lossy().into_owned()),
+        ) {
+            if let Ok(ssh_recip) = age::ssh::Recipient::try_from(ssh_id) {
+                return Ok(vec![Box::new(ssh_recip)]);
+            }
+        }
+    }
+
+    // 4. Try reading path directly line-by-line (e.g. .pub file or recipients list)
+    if let Ok(content) = std::fs::read_to_string(path) {
+        let mut list: Vec<Box<dyn age::Recipient + Send>> = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Ok(pk) = age::ssh::Recipient::from_str(line) {
+                list.push(Box::new(pk));
+            } else if let Ok(pk) = age::x25519::Recipient::from_str(line) {
+                list.push(Box::new(pk));
+            }
+        }
+        if !list.is_empty() {
+            return Ok(list);
+        }
+    }
+
+    Err(EnstowError::Config(format!(
+        "No valid age or SSH recipients could be extracted from '{}'",
+        path.display()
+    )))
+}
+
 pub fn encrypt_file_age(
     input_path: &Path,
     output_path: &Path,
@@ -140,15 +278,13 @@ pub fn encrypt_file_age(
     age_key_file: Option<&Path>,
 ) -> Result<(), EnstowError> {
     use std::io::Write;
-    use std::str::FromStr;
 
     let mut recipient_list: Vec<Box<dyn age::Recipient + Send>> = Vec::new();
 
     // 1. Explicit recipient strings
     for r in recipients {
-        let pk =
-            age::x25519::Recipient::from_str(r).map_err(|e| EnstowError::Config(e.to_string()))?;
-        recipient_list.push(Box::new(pk));
+        let parsed = load_recipients_from_str(r)?;
+        recipient_list.extend(parsed);
     }
 
     // 2. ENSTOW_RECIPIENTS / SOPS_AGE_RECIPIENTS env var if none provided
@@ -161,9 +297,8 @@ pub fn encrypt_file_age(
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
             {
-                let pk = age::x25519::Recipient::from_str(r)
-                    .map_err(|e| EnstowError::Config(e.to_string()))?;
-                recipient_list.push(Box::new(pk));
+                let parsed = load_recipients_from_str(r)?;
+                recipient_list.extend(parsed);
             }
         }
     }
@@ -171,12 +306,12 @@ pub fn encrypt_file_age(
     // 3. Fallback to extracting public keys from key files
     if recipient_list.is_empty() {
         let key_paths = get_age_key_paths(age_key_file);
-        for kp in key_paths {
+        for kp in &key_paths {
             if kp.exists() {
-                if let Ok(id_file) = age::IdentityFile::from_file(kp.to_string_lossy().into_owned())
-                {
-                    if let Ok(recips) = id_file.to_recipients() {
+                if let Ok(recips) = load_recipients_from_file(kp) {
+                    if !recips.is_empty() {
                         recipient_list.extend(recips);
+                        break;
                     }
                 }
             }
@@ -185,7 +320,7 @@ pub fn encrypt_file_age(
 
     if recipient_list.is_empty() {
         return Err(EnstowError::Config(
-            "No age recipients found. Provide --recipient, set ENSTOW_RECIPIENTS (or SOPS_AGE_RECIPIENTS), or ensure an age key file exists.".into(),
+            "No age or SSH recipients found. Provide --recipient, set ENSTOW_RECIPIENTS (or SOPS_AGE_RECIPIENTS), or ensure an age or SSH key file exists.".into(),
         ));
     }
 
@@ -455,14 +590,28 @@ fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
             paths.push(p);
         }
     }
+    if let Ok(ssh_key) = std::env::var("ENSTOW_SSH_KEY_FILE") {
+        let p = PathBuf::from(ssh_key);
+        if !paths.contains(&p) {
+            paths.push(p);
+        }
+    }
     if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(home)
+        let p = PathBuf::from(&home)
             .join(".config")
             .join("sops")
             .join("age")
             .join("keys.txt");
         if !paths.contains(&p) {
             paths.push(p);
+        }
+        let ed25519 = PathBuf::from(&home).join(".ssh").join("id_ed25519");
+        if !paths.contains(&ed25519) {
+            paths.push(ed25519);
+        }
+        let rsa = PathBuf::from(&home).join(".ssh").join("id_rsa");
+        if !paths.contains(&rsa) {
+            paths.push(rsa);
         }
     }
     paths
