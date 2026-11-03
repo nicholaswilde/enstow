@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -51,6 +52,13 @@ impl RecipientsConfig {
     }
 }
 
+/// Configuration for a package profile.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProfileConfig {
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
 /// Representation of values loaded from a configuration file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigFile {
@@ -70,6 +78,8 @@ pub struct ConfigFile {
     pub backup: Option<bool>,
     pub backup_dir: Option<PathBuf>,
     pub mask_secrets: Option<bool>,
+    pub default_profile: Option<String>,
+    pub profiles: Option<BTreeMap<String, ProfileConfig>>,
 }
 
 impl ConfigFile {
@@ -211,6 +221,7 @@ pub struct ResolvedCommonArgs {
     pub force: bool,
     pub prune: bool,
     pub age_key_file: Option<PathBuf>,
+    pub profile: Option<String>,
     pub packages: Vec<String>,
     pub ignore: Vec<String>,
     pub backup: bool,
@@ -226,6 +237,7 @@ impl ResolvedCommonArgs {
             force: self.force,
             prune: self.prune,
             age_key_file: self.age_key_file.clone(),
+            profile: self.profile.clone(),
             packages: self.packages.clone(),
             ignore: self.ignore.clone(),
             backup: self.backup,
@@ -234,11 +246,133 @@ impl ResolvedCommonArgs {
     }
 }
 
+/// Resolve dotfile packages across explicit CLI packages, profile selection,
+/// ENSTOW_PACKAGES environment variable, config default profile, and config packages.
+///
+/// Precedence:
+/// 1. Explicit CLI packages (if non-empty)
+/// 2. Profile selection via `--profile` or `ENSTOW_PROFILE`
+/// 3. `ENSTOW_PACKAGES` environment variable
+/// 4. Config default (`default_profile`, then `config.packages`)
+/// 5. Empty vec (stows all packages in source root)
+pub fn resolve_packages(
+    cli_packages: &[String],
+    cli_profile: Option<&str>,
+    config: Option<&ConfigFile>,
+) -> Result<Vec<String>> {
+    // 1. Explicit CLI packages (if non-empty)
+    if !cli_packages.is_empty() {
+        return Ok(cli_packages.to_vec());
+    }
+
+    // 2. Profile selection via --profile or ENSTOW_PROFILE
+    let profile_name = cli_profile
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            std::env::var("ENSTOW_PROFILE")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    if let Some(name) = profile_name {
+        if let Some(profile) = config
+            .and_then(|c| c.profiles.as_ref())
+            .and_then(|p| p.get(&name))
+        {
+            return Ok(profile.packages.clone());
+        }
+
+        let available = config
+            .and_then(|c| c.profiles.as_ref())
+            .map(|p| p.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if available.is_empty() {
+            anyhow::bail!("Unknown profile '{}'", name);
+        } else {
+            anyhow::bail!(
+                "Unknown profile '{}'. Available profiles: {}",
+                name,
+                available.join(", ")
+            );
+        }
+    }
+
+    // 3. ENSTOW_PACKAGES environment variable
+    if let Ok(pkg_env) = std::env::var("ENSTOW_PACKAGES") {
+        if !pkg_env.trim().is_empty() {
+            return Ok(pkg_env
+                .split([',', ' '])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect());
+        }
+    }
+
+    // 4. Config default
+    if let Some(def_profile) = config
+        .and_then(|c| c.default_profile.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(profile) = config
+            .and_then(|c| c.profiles.as_ref())
+            .and_then(|p| p.get(def_profile))
+        {
+            return Ok(profile.packages.clone());
+        }
+
+        let available = config
+            .and_then(|c| c.profiles.as_ref())
+            .map(|p| p.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if available.is_empty() {
+            anyhow::bail!("Unknown default profile '{}'", def_profile);
+        } else {
+            anyhow::bail!(
+                "Unknown default profile '{}'. Available profiles: {}",
+                def_profile,
+                available.join(", ")
+            );
+        }
+    }
+
+    if let Some(pkgs) = config.and_then(|c| c.packages.clone()) {
+        return Ok(pkgs);
+    }
+
+    // 5. Default: empty vec (all packages in source root)
+    Ok(Vec::new())
+}
+
+/// Resolve the active profile name, if any, across CLI flag, ENSTOW_PROFILE, and config default_profile.
+pub fn resolve_profile(cli_profile: Option<&str>, config: Option<&ConfigFile>) -> Option<String> {
+    cli_profile
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            std::env::var("ENSTOW_PROFILE")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            config
+                .and_then(|c| c.default_profile.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        })
+}
+
 /// Resolve common arguments across CLI args, environment variables, config file, and defaults.
 pub fn resolve_common_args(
     cli_args: &CommonArgs,
     config: Option<&ConfigFile>,
-) -> ResolvedCommonArgs {
+) -> Result<ResolvedCommonArgs> {
     // 1. Source precedence: CLI > ENSTOW_SOURCE > Config > Default (".")
     let source = if let Some(s) = &cli_args.source {
         s.clone()
@@ -276,22 +410,9 @@ pub fn resolve_common_args(
     // 3. Age key file precedence: CLI > ENSTOW_AGE_KEY_FILE > SOPS_AGE_KEY_FILE > Config
     let age_key_file = resolve_age_key_file(cli_args.age_key_file.as_deref(), config);
 
-    // 4. Packages precedence: CLI (if non-empty) > ENSTOW_PACKAGES > Config > empty
-    let packages = if !cli_args.packages.is_empty() {
-        cli_args.packages.clone()
-    } else if let Ok(pkg_env) = std::env::var("ENSTOW_PACKAGES") {
-        if !pkg_env.trim().is_empty() {
-            pkg_env
-                .split([',', ' '])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        } else {
-            config.and_then(|c| c.packages.clone()).unwrap_or_default()
-        }
-    } else {
-        config.and_then(|c| c.packages.clone()).unwrap_or_default()
-    };
+    // 4. Packages and profile precedence
+    let packages = resolve_packages(&cli_args.packages, cli_args.profile.as_deref(), config)?;
+    let profile = resolve_profile(cli_args.profile.as_deref(), config);
 
     // 5. Additional ignore patterns: from CLI, ENSTOW_IGNORE, and Config
     let ignore = resolve_ignore_patterns(&cli_args.ignore, config);
@@ -349,18 +470,19 @@ pub fn resolve_common_args(
         target.join(".enstow-backup")
     };
 
-    ResolvedCommonArgs {
+    Ok(ResolvedCommonArgs {
         source,
         target,
         dry_run,
         force,
         prune,
         age_key_file,
+        profile,
         packages,
         ignore,
         backup,
         backup_dir,
-    }
+    })
 }
 
 /// Parse a boolean value from an environment variable ("1", "true", "0", "false").

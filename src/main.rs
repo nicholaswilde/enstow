@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Apply(args)) => {
             let common =
-                enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+                enstow::config::resolve_common_args(&args, config.as_ref())?.to_common_args();
             if common.prune {
                 let stale_actions = stow::plan_prune(&common)?;
                 stow::execute_unstow_plan(&stale_actions, &common.target_path(), common.dry_run)?;
@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Restow(args)) => {
             let common =
-                enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+                enstow::config::resolve_common_args(&args, config.as_ref())?.to_common_args();
             let unstow_actions = stow::plan_unstow(&common)?;
             stow::execute_unstow_plan(&unstow_actions, &common.target_path(), common.dry_run)?;
             let apply_actions = stow::plan_stow(&common)?;
@@ -55,13 +55,13 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Unstow(args)) => {
             let common =
-                enstow::config::resolve_common_args(&args, config.as_ref()).to_common_args();
+                enstow::config::resolve_common_args(&args, config.as_ref())?.to_common_args();
             let actions = stow::plan_unstow(&common)?;
             stow::execute_unstow_plan(&actions, &common.target_path(), common.dry_run)?;
         }
         Some(Commands::Status { common, json }) => {
             let resolved_common =
-                enstow::config::resolve_common_args(&common, config.as_ref()).to_common_args();
+                enstow::config::resolve_common_args(&common, config.as_ref())?.to_common_args();
             let json = enstow::config::resolve_json(json, config.as_ref());
             let actions = stow::plan_stow(&resolved_common)?;
             let statuses = stow::check_status(&actions, resolved_common.age_key_file.as_deref())?;
@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
             mask_secrets,
         }) => {
             let resolved_common =
-                enstow::config::resolve_common_args(&common, config.as_ref()).to_common_args();
+                enstow::config::resolve_common_args(&common, config.as_ref())?.to_common_args();
             let json = enstow::config::resolve_json(json, config.as_ref());
             let mask_secrets = enstow::config::resolve_mask_secrets(mask_secrets, config.as_ref());
             let actions = stow::plan_stow(&resolved_common)?;
@@ -180,7 +180,7 @@ fn main() -> anyhow::Result<()> {
         None => {
             // Default to applying with root common args
             let common =
-                enstow::config::resolve_common_args(&cli.common, config.as_ref()).to_common_args();
+                enstow::config::resolve_common_args(&cli.common, config.as_ref())?.to_common_args();
             let actions = stow::plan_stow(&common)?;
             stow::execute_plan_with_backup(
                 &actions,

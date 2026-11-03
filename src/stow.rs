@@ -867,6 +867,7 @@ mod tests {
             force: false,
             prune: false,
             age_key_file: None,
+            profile: None,
             packages: Vec::new(),
             ignore: Vec::new(),
             backup: false,

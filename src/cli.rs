@@ -80,6 +80,10 @@ pub struct CommonArgs {
     #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,
 
+    /// Dotfile profile to select packages from configuration
+    #[arg(long, env = "ENSTOW_PROFILE", value_name = "NAME")]
+    pub profile: Option<String>,
+
     /// Dotfile packages to stow or unstow
     #[arg(value_name = "PACKAGES")]
     pub packages: Vec<String>,

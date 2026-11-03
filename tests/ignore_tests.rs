@@ -142,7 +142,9 @@ fn test_enstow_ignore_env_applies_across_all_packages() {
         ..Default::default()
     };
 
-    let resolved = resolve_common_args(&cli_args, None).to_common_args();
+    let resolved = resolve_common_args(&cli_args, None)
+        .unwrap()
+        .to_common_args();
     let plan = plan_stow(&resolved).unwrap();
 
     std::env::remove_var("ENSTOW_IGNORE");
@@ -192,7 +194,7 @@ fn test_ignore_patterns_additive_and_deduplicated() {
         ..Default::default()
     };
 
-    let resolved = resolve_common_args(&cli_args, Some(&config));
+    let resolved = resolve_common_args(&cli_args, Some(&config)).unwrap();
 
     std::env::remove_var("ENSTOW_IGNORE");
     if let Some(v) = orig_ignore {

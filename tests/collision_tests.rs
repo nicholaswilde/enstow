@@ -405,7 +405,7 @@ backup = true
         ..Default::default()
     };
 
-    let resolved = enstow::config::resolve_common_args(&cli_args, Some(&config));
+    let resolved = enstow::config::resolve_common_args(&cli_args, Some(&config)).unwrap();
     assert!(resolved.backup);
     assert_eq!(
         resolved.backup_dir,

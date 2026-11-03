@@ -4,7 +4,7 @@
 .SH NAME
 enstow \- Secret\-aware dotfile manager combining stow symlinking with sops/age decryption
 .SH SYNOPSIS
-\fBenstow\fR [\fB\-C\fR|\fB\-\-config\fR] [\fB\-\-log\-level\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR]... [\fB\-s\fR|\fB\-\-source\fR] [\fB\-t\fR|\fB\-\-target\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-b\fR|\fB\-\-backup\fR] [\fB\-\-backup\-dir\fR] [\fB\-\-prune\fR] [\fB\-\-age\-key\-file\fR] [\fB\-i\fR|\fB\-\-ignore\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPACKAGES\fR] [\fIsubcommands\fR]
+\fBenstow\fR [\fB\-C\fR|\fB\-\-config\fR] [\fB\-\-log\-level\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR]... [\fB\-s\fR|\fB\-\-source\fR] [\fB\-t\fR|\fB\-\-target\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-b\fR|\fB\-\-backup\fR] [\fB\-\-backup\-dir\fR] [\fB\-\-prune\fR] [\fB\-\-age\-key\-file\fR] [\fB\-\-profile\fR] [\fB\-i\fR|\fB\-\-ignore\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPACKAGES\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 Secret\-aware dotfile manager combining stow symlinking with sops/age decryption
 .SH OPTIONS
@@ -44,6 +44,9 @@ Prune stale symlinks for managed packages during apply
 .TP
 \fB\-\-age\-key\-file\fR \fI<AGE_KEY_FILE>\fR
 Explicit path to age identity key file
+.TP
+\fB\-\-profile\fR \fI<NAME>\fR
+Dotfile profile to select packages from configuration
 .TP
 \fB\-i\fR, \fB\-\-ignore\fR \fI<PATTERN>\fR
 Additional pattern to ignore (can be specified multiple times)

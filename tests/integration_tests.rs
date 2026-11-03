@@ -160,7 +160,9 @@ force = false
     };
 
     // Apply with config dry_run = true
-    let common = enstow::config::resolve_common_args(&cli_args, Some(&config)).to_common_args();
+    let common = enstow::config::resolve_common_args(&cli_args, Some(&config))
+        .unwrap()
+        .to_common_args();
     assert!(common.dry_run);
     assert!(!common.force);
 
@@ -170,7 +172,9 @@ force = false
 
     // 2. Env var ENSTOW_DRY_RUN=0 overrides config dry_run = true
     std::env::set_var("ENSTOW_DRY_RUN", "0");
-    let common = enstow::config::resolve_common_args(&cli_args, Some(&config)).to_common_args();
+    let common = enstow::config::resolve_common_args(&cli_args, Some(&config))
+        .unwrap()
+        .to_common_args();
     assert!(!common.dry_run);
 
     execute_plan(&plan, common.dry_run, None, common.force).unwrap();
@@ -179,7 +183,9 @@ force = false
 
     // 3. Unstow with config dry_run = true (env removed)
     std::env::remove_var("ENSTOW_DRY_RUN");
-    let common = enstow::config::resolve_common_args(&cli_args, Some(&config)).to_common_args();
+    let common = enstow::config::resolve_common_args(&cli_args, Some(&config))
+        .unwrap()
+        .to_common_args();
     assert!(common.dry_run);
 
     let unstow_plan = enstow::stow::plan_unstow(&common).unwrap();
@@ -200,15 +206,17 @@ force = false
         prune: false,
         ..Default::default()
     };
-    let resolved_no_force =
-        enstow::config::resolve_common_args(&common_no_force, Some(&config)).to_common_args();
+    let resolved_no_force = enstow::config::resolve_common_args(&common_no_force, Some(&config))
+        .unwrap()
+        .to_common_args();
     assert!(!resolved_no_force.force);
     assert!(execute_plan(&plan, false, None, resolved_no_force.force).is_err());
 
     // Overriding with ENSTOW_FORCE=1 allows overwriting
     std::env::set_var("ENSTOW_FORCE", "1");
-    let resolved_force =
-        enstow::config::resolve_common_args(&common_no_force, Some(&config)).to_common_args();
+    let resolved_force = enstow::config::resolve_common_args(&common_no_force, Some(&config))
+        .unwrap()
+        .to_common_args();
     assert!(resolved_force.force);
     execute_plan(&plan, false, None, resolved_force.force).unwrap();
     assert!(enstow::stow::is_symlink_to(&target_file, &dotfile));
@@ -252,7 +260,9 @@ json = true
         ..Default::default()
     };
 
-    let common = enstow::config::resolve_common_args(&cli_args, Some(&config)).to_common_args();
+    let common = enstow::config::resolve_common_args(&cli_args, Some(&config))
+        .unwrap()
+        .to_common_args();
     let plan = plan_stow(&common).unwrap();
     let statuses = enstow::stow::check_status(&plan, None).unwrap();
 

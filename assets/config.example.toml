@@ -35,6 +35,16 @@
 #     "git",
 # ]
 
+# Default profile to activate if none is specified on the CLI ($ENSTOW_PROFILE or --profile)
+# default_profile = "work"
+
+# Profile definitions mapping profile names to lists of packages
+# [profiles.work]
+# packages = ["common", "git", "zsh", "work"]
+#
+# [profiles.server]
+# packages = ["common", "bash", "server"]
+
 # Preferred editor for `enstow edit` (defaults to $ENSTOW_EDITOR, $VISUAL, $EDITOR, or "nano")
 # editor = "nvim"
 

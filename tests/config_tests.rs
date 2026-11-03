@@ -200,7 +200,7 @@ recipients = ["recipient_config"]
 
     // Test 1: Config file overrides built-in defaults when CLI and Env are absent
     let empty_cli = CommonArgs::default();
-    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    let resolved = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert_eq!(resolved.source, PathBuf::from("/from/config/source"));
     assert_eq!(resolved.target, PathBuf::from("/from/config/target"));
     assert_eq!(
@@ -226,7 +226,7 @@ recipients = ["recipient_config"]
     std::env::set_var("EDITOR", "env_editor");
     std::env::set_var("ENSTOW_PACKAGES", "pkg_env1,pkg_env2");
 
-    let resolved_env = resolve_common_args(&empty_cli, Some(&config));
+    let resolved_env = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert_eq!(resolved_env.source, PathBuf::from("/from/env/source"));
     assert_eq!(resolved_env.target, PathBuf::from("/from/env/target"));
     assert_eq!(
@@ -259,7 +259,7 @@ recipients = ["recipient_config"]
         ..Default::default()
     };
 
-    let resolved_cli = resolve_common_args(&cli_args, Some(&config));
+    let resolved_cli = resolve_common_args(&cli_args, Some(&config)).unwrap();
     assert_eq!(resolved_cli.source, PathBuf::from("/from/cli/source"));
     assert_eq!(resolved_cli.target, PathBuf::from("/from/cli/target"));
     assert_eq!(
@@ -364,7 +364,7 @@ fn test_enstow_env_aliases_precedence() {
     );
 
     let empty_cli = CommonArgs::default();
-    let resolved = resolve_common_args(&empty_cli, None);
+    let resolved = resolve_common_args(&empty_cli, None).unwrap();
     assert_eq!(resolved.age_key_file, Some(PathBuf::from("/enstow/key")));
 
     // Clean up
@@ -466,7 +466,7 @@ fn test_backup_precedence_hierarchy() {
     let empty_cli = CommonArgs::default();
 
     // 1. Defaults when nothing is set
-    let resolved = resolve_common_args(&empty_cli, None);
+    let resolved = resolve_common_args(&empty_cli, None).unwrap();
     assert!(!resolved.backup);
     assert_eq!(resolved.backup_dir, resolved.target.join(".enstow-backup"));
 
@@ -476,20 +476,20 @@ backup = true
 backup_dir = "/from/config/backup"
 "#;
     let config = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
-    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    let resolved = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert!(resolved.backup);
     assert_eq!(resolved.backup_dir, PathBuf::from("/from/config/backup"));
 
     // 3. Env var overrides config file
     std::env::set_var("ENSTOW_BACKUP", "false");
     std::env::set_var("ENSTOW_BACKUP_DIR", "/from/env/backup");
-    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    let resolved = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert!(!resolved.backup);
     assert_eq!(resolved.backup_dir, PathBuf::from("/from/env/backup"));
 
     // 3b. Env var ENSTOW_BACKUP=1 enables backup
     std::env::set_var("ENSTOW_BACKUP", "1");
-    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    let resolved = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert!(resolved.backup);
 
     // 4. CLI flags override env var and config file
@@ -500,7 +500,7 @@ backup_dir = "/from/config/backup"
         backup_dir: Some(PathBuf::from("/from/cli/backup")),
         ..Default::default()
     };
-    let resolved = resolve_common_args(&cli_flags, Some(&config));
+    let resolved = resolve_common_args(&cli_flags, Some(&config)).unwrap();
     assert!(resolved.backup);
     assert_eq!(resolved.backup_dir, PathBuf::from("/from/cli/backup"));
 
@@ -566,7 +566,7 @@ fn test_dry_run_and_force_precedence_hierarchy() {
     let empty_cli = CommonArgs::default();
 
     // 1. Defaults are false when nothing is set
-    let resolved = resolve_common_args(&empty_cli, None);
+    let resolved = resolve_common_args(&empty_cli, None).unwrap();
     assert!(!resolved.dry_run);
     assert!(!resolved.force);
 
@@ -576,7 +576,7 @@ dry_run = true
 force = true
 "#;
     let config = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
-    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    let resolved = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert!(resolved.dry_run);
     assert!(resolved.force);
 
@@ -584,7 +584,7 @@ force = true
     // 3a. Env disables dry_run and force with "0" / "false"
     std::env::set_var("ENSTOW_DRY_RUN", "0");
     std::env::set_var("ENSTOW_FORCE", "false");
-    let resolved = resolve_common_args(&empty_cli, Some(&config));
+    let resolved = resolve_common_args(&empty_cli, Some(&config)).unwrap();
     assert!(!resolved.dry_run);
     assert!(!resolved.force);
 
@@ -596,7 +596,7 @@ force = false
     let config_false = ConfigFile::parse(toml_false, ConfigFormat::Toml).unwrap();
     std::env::set_var("ENSTOW_DRY_RUN", "1");
     std::env::set_var("ENSTOW_FORCE", "true");
-    let resolved = resolve_common_args(&empty_cli, Some(&config_false));
+    let resolved = resolve_common_args(&empty_cli, Some(&config_false)).unwrap();
     assert!(resolved.dry_run);
     assert!(resolved.force);
 
@@ -609,7 +609,7 @@ force = false
         prune: false,
         ..Default::default()
     };
-    let resolved = resolve_common_args(&cli_flags, Some(&config_false));
+    let resolved = resolve_common_args(&cli_flags, Some(&config_false)).unwrap();
     assert!(resolved.dry_run);
     assert!(resolved.force);
 
@@ -1030,7 +1030,7 @@ fn test_config_error_paths_and_fallbacks() {
     };
 
     let empty_cli = CommonArgs::default();
-    let resolved = resolve_common_args(&empty_cli, Some(&cfg_env_fallback));
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg_env_fallback)).unwrap();
     assert_eq!(resolved.source, PathBuf::from("/fallback/source"));
     assert_eq!(resolved.target, PathBuf::from("/fallback/target"));
     assert_eq!(resolved.packages, vec!["fallback_pkg".to_string()]);

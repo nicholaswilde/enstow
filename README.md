@@ -375,6 +375,13 @@ recipients = [
   "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
 ]
 packages = ["zsh", "nvim", "git"]
+default_profile = "work"
+
+[profiles.work]
+packages = ["common", "git", "zsh", "work"]
+
+[profiles.server]
+packages = ["common", "bash", "server"]
 editor = "nvim"
 ignore = ["*.tmp", ".DS_Store", "*.swp"]
 json = false
@@ -398,6 +405,19 @@ packages:
   - zsh
   - nvim
   - git
+default_profile: work
+profiles:
+  work:
+    packages:
+      - common
+      - git
+      - zsh
+      - work
+  server:
+    packages:
+      - common
+      - bash
+      - server
 editor: nvim
 ignore:
   - "*.tmp"
@@ -427,6 +447,15 @@ log_level: info
     "nvim",
     "git"
   ],
+  "default_profile": "work",
+  "profiles": {
+    "work": {
+      "packages": ["common", "git", "zsh", "work"]
+    },
+    "server": {
+      "packages": ["common", "bash", "server"]
+    }
+  },
   "editor": "nvim",
   "ignore": [
     "*.tmp",
@@ -453,6 +482,7 @@ log_level: info
 | `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | `age_key_file` | `--age-key-file` | Path to age identity key file for encryption/decryption | None |
 | `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | `recipients` | `-r`, `--recipient` | Age recipient public keys for encryption | None |
 | `ENSTOW_PACKAGES` | `packages` | `PACKAGES` | Default packages to stow when none specified | None |
+| `ENSTOW_PROFILE` | `default_profile` / `profiles` | `--profile` | Profile to select packages from configuration | None |
 | `ENSTOW_IGNORE` | `ignore` | `-i`, `--ignore` | Additional glob patterns to ignore (comma or colon separated) | None |
 | `ENSTOW_EDITOR` / `VISUAL` / `EDITOR` | `editor` | `--editor` | Editor command for interactive secret editing (`enstow edit`) | `nano` |
 | `ENSTOW_JSON` | `json` | `--json` | Emit status output in JSON format (`true`/`false`) | `false` |

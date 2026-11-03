@@ -57,32 +57,32 @@ fn test_prune_precedence_hierarchy() {
     let empty_cli = CommonArgs::default();
 
     // 1. Default is false
-    let resolved = resolve_common_args(&empty_cli, None);
+    let resolved = resolve_common_args(&empty_cli, None).unwrap();
     assert!(!resolved.prune);
 
     // 2. Config file sets prune = true
     let cfg = ConfigFile::parse("prune = true", ConfigFormat::Toml).unwrap();
-    let resolved = resolve_common_args(&empty_cli, Some(&cfg));
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg)).unwrap();
     assert!(resolved.prune);
 
     // 3. Env var ENSTOW_PRUNE overrides config file
     // 3a. Env disables prune with "0" / "false"
     std::env::set_var("ENSTOW_PRUNE", "0");
-    let resolved = resolve_common_args(&empty_cli, Some(&cfg));
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg)).unwrap();
     assert!(!resolved.prune);
 
     std::env::set_var("ENSTOW_PRUNE", "false");
-    let resolved = resolve_common_args(&empty_cli, Some(&cfg));
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg)).unwrap();
     assert!(!resolved.prune);
 
     // 3b. Env enables prune with "1" / "true" over config false
     let cfg_false = ConfigFile::parse("prune = false", ConfigFormat::Toml).unwrap();
     std::env::set_var("ENSTOW_PRUNE", "1");
-    let resolved = resolve_common_args(&empty_cli, Some(&cfg_false));
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg_false)).unwrap();
     assert!(resolved.prune);
 
     std::env::set_var("ENSTOW_PRUNE", "true");
-    let resolved = resolve_common_args(&empty_cli, Some(&cfg_false));
+    let resolved = resolve_common_args(&empty_cli, Some(&cfg_false)).unwrap();
     assert!(resolved.prune);
 
     // 4. CLI flag --prune overrides env and config
@@ -91,7 +91,7 @@ fn test_prune_precedence_hierarchy() {
         prune: true,
         ..Default::default()
     };
-    let resolved = resolve_common_args(&cli_flag, Some(&cfg_false));
+    let resolved = resolve_common_args(&cli_flag, Some(&cfg_false)).unwrap();
     assert!(resolved.prune);
 
     std::env::remove_var("ENSTOW_PRUNE");
@@ -256,7 +256,9 @@ fn test_apply_with_prune_via_config_and_env() {
     };
 
     // Initial stow
-    let initial_resolved = resolve_common_args(&cli_args, None).to_common_args();
+    let initial_resolved = resolve_common_args(&cli_args, None)
+        .unwrap()
+        .to_common_args();
     let initial_plan = plan_stow(&initial_resolved).unwrap();
     execute_plan(&initial_plan, false, None, false).unwrap();
     assert!(target_file1.exists());
@@ -267,7 +269,9 @@ fn test_apply_with_prune_via_config_and_env() {
 
     // 1. With config prune = true
     let cfg = ConfigFile::parse("prune = true", ConfigFormat::Toml).unwrap();
-    let resolved_cfg = resolve_common_args(&cli_args, Some(&cfg)).to_common_args();
+    let resolved_cfg = resolve_common_args(&cli_args, Some(&cfg))
+        .unwrap()
+        .to_common_args();
     assert!(resolved_cfg.prune);
 
     let stale_actions = enstow::stow::plan_prune(&resolved_cfg).unwrap();
@@ -290,7 +294,9 @@ fn test_apply_with_prune_via_config_and_env() {
     // 2. With ENSTOW_PRUNE=1 over config prune = false
     let cfg_false = ConfigFile::parse("prune = false", ConfigFormat::Toml).unwrap();
     std::env::set_var("ENSTOW_PRUNE", "1");
-    let resolved_env = resolve_common_args(&cli_args, Some(&cfg_false)).to_common_args();
+    let resolved_env = resolve_common_args(&cli_args, Some(&cfg_false))
+        .unwrap()
+        .to_common_args();
     assert!(resolved_env.prune);
 
     let stale_actions2 = enstow::stow::plan_prune(&resolved_env).unwrap();
