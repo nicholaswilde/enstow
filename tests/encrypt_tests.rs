@@ -47,19 +47,67 @@ fn test_encrypt_file_using_key_file() {
     assert_eq!(decrypted, content);
 }
 
+const TEST_ED25519_PRIV: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACBJGoWXLvLl4ramBb22t/Cjjb9CflCYaSn0jKfDHiyKYwAAAJC6oXeRuqF3
+kQAAAAtzc2gtZWQyNTUxOQAAACBJGoWXLvLl4ramBb22t/Cjjb9CflCYaSn0jKfDHiyKYw
+AAAEB3bYZEpsXO0UVsS8EmNjABxHEO+pZR/bftJfkx5vF5WEkahZcu8uXitqYFvba38KON
+v0J+UJhpKfSMp8MeLIpjAAAAC3Rlc3RAZW5zdG93AQI=
+-----END OPENSSH PRIVATE KEY-----
+";
+
+const TEST_ED25519_PUB: &str = "\
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEkahZcu8uXitqYFvba38KONv0J+UJhpKfSMp8MeLIpj test@enstow
+";
+
+const TEST_RSA_PRIV: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
+NhAAAAAwEAAQAAAQEA2SM8wU5Viwgp2WODW0unTM8OseUgIzAMeeoFF/tWbihGv11CVoAR
+fwbxF/JqYa99kvMZ4MsnZqkxchYDmKuCIWWqxH8kewBcBSRzWvIjUYtMjSFN+c6ja5gvZP
+Pi8XrG1e7nGC3n7BT3v/0J00NdZ9vypN7+seN6jbikl8vy9RJXBTfU47PR32vT697vDNsU
+R+qwuCmQVcYs6xfPZJ9vf492S32PhQQ8dixVaSa0HRCVuATzc54WX4i3nzA7xXx9sW0+QJ
+/5k56/8dsCTZ/+7SKoPox1QFg8Zc3ZhSkqfnAWdBaprFlULbFJSRjVxlJG2e/xBPF22FoM
+LAOGv6OQVQAAA8gFY9hUBWPYVAAAAAdzc2gtcnNhAAABAQDZIzzBTlWLCCnZY4NbS6dMzw
+6x5SAjMAx56gUX+1ZuKEa/XUJWgBF/BvEX8mphr32S8xngyydmqTFyFgOYq4IhZarEfyR7
+AFwFJHNa8iNRi0yNIU35zqNrmC9k8+LxesbV7ucYLefsFPe//QnTQ11n2/Kk3v6x43qNuK
+SXy/L1ElcFN9Tjs9Hfa9Pr3u8M2xRH6rC4KZBVxizrF89kn29/j3ZLfY+FBDx2LFVpJrQd
+EJW4BPNznhZfiLefMDvFfH2xbT5An/mTnr/x2wJNn/7tIqg+jHVAWDxlzdmFKSp+cBZ0Fq
+msWVQtsUlJGNXGUkbZ7/EE8XbYWgwsA4a/o5BVAAAAAwEAAQAAAQAsW3Jx2trGyCgkbJvM
+7quCmVnbJX9nMM2bqh7YQ1PotPme5iJDIW5xkK13wuHQitUQS/EhZt7pre6X679YVNEEmY
+xFD+QX7H7f3g5iqcxlQBunSQJw4bGorTIhYWEfC4HK+j7jRZ13MOFbqwlyyvQt31S2MYe+
+N0Y15V5aVCORxIjGj3ltiloatjT/1bFLJuB7Dcbx8YtY9KZvPN1JBnE2rCCmDA9fWW8U0t
+y82fBfzCmzNwUGzYiTzBCnyhCvDxIUhpwf05wlMHlaCwwWNn1ntnxOT5DYtRLNVWvVr0lO
+JJXPuEsZ2ZDjWjqXQE5smTQOFdWHrmOqXBrYH+fAqcERAAAAgQCjlIMVfYjAu9MmJiqgf2
+twaX2GrsTQA8eFFkpdV/LY2VKrDFGrD7PP8An+6L6Re6SAQ2cYRsdgzocvQTq87+CX5uZk
+l9IRaNF7zZ5orOPoWAuqneBLQJqU89ls1MWpqQd5G38XgK6ewK9+hCaDJMJSpFyQruriGp
+dDBnESvYDlfgAAAIEA/Vknr+BAtTZ2wihWFVczOwhUZvMiYWs8tXendD/1x1186PQorVqx
+1oOzfkLuG3obY3XeUIIrKeFbojVMMhOjRjVLJnUY5Ta8EoDoQaxslThEKl0JE76bb59l2q
+Q8KcXPdJ9T+77btMKv61IcnItx4vG9OeBcEW/NyrjLyW1Inx8AAACBANtpDmK39jdo7qZq
+EgujmgL5GZO8whdjFGCo/ibd6wKEynA8Fr/VjzwkdPx66rWrDhotVTZMMHgOHHo5upK8o0
+WkgTrHepzgM2YIAFOJNhjlDsEY5E4mh2v5Q/K7/+oNzBPKPdhWMBby3LFiFlmRAeD51JFn
++DqjXsy6OJVO9gYLAAAAC3Rlc3RAZW5zdG93AQIDBAUGBw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+const TEST_RSA_PUB: &str = "\
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDZIzzBTlWLCCnZY4NbS6dMzw6x5SAjMAx56gUX+1ZuKEa/XUJWgBF/BvEX8mphr32S8xngyydmqTFyFgOYq4IhZarEfyR7AFwFJHNa8iNRi0yNIU35zqNrmC9k8+LxesbV7ucYLefsFPe//QnTQ11n2/Kk3v6x43qNuKSXy/L1ElcFN9Tjs9Hfa9Pr3u8M2xRH6rC4KZBVxizrF89kn29/j3ZLfY+FBDx2LFVpJrQdEJW4BPNznhZfiLefMDvFfH2xbT5An/mTnr/x2wJNn/7tIqg+jHVAWDxlzdmFKSp+cBZ0FqmsWVQtsUlJGNXGUkbZ7/EE8XbYWgwsA4a/o5BV test@enstow
+";
+
 fn generate_ssh_key(
     dir: &std::path::Path,
     key_type: &str,
 ) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (priv_content, pub_content) = match key_type {
+        "ed25519" => (TEST_ED25519_PRIV, TEST_ED25519_PUB),
+        "rsa" => (TEST_RSA_PRIV, TEST_RSA_PUB),
+        _ => panic!("unsupported key type"),
+    };
     let priv_path = dir.join(format!("id_{key_type}"));
-    let mut cmd = std::process::Command::new("ssh-keygen");
-    cmd.args(["-t", key_type, "-N", "", "-f"]).arg(&priv_path);
-    if key_type == "rsa" {
-        cmd.args(["-b", "2048"]);
-    }
-    let status = cmd.status().expect("Failed to execute ssh-keygen");
-    assert!(status.success());
     let pub_path = dir.join(format!("id_{key_type}.pub"));
+    fs::write(&priv_path, priv_content).unwrap();
+    fs::write(&pub_path, pub_content).unwrap();
     (priv_path, pub_path)
 }
 
