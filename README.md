@@ -48,9 +48,6 @@ brew tap nicholaswilde/homebrew-tap
 brew install enstow
 ```
 
-> [!NOTE]
-> The Homebrew tap will not be available until after the first release.
-
 ### Prerequisites
 
 - [Rust toolchain](https://rustup.rs/) (1.88+)
