@@ -237,3 +237,148 @@ fn test_ignore_mid_wildcard_pattern() {
     assert_eq!(plan.len(), 1);
     assert_eq!(plan[0].target().file_name().unwrap(), "app_staging_123.txt");
 }
+
+#[test]
+fn test_gitignore_negation_syntax() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    fs::write(source_dir.path().join("app.conf"), "content").unwrap();
+    fs::write(source_dir.path().join("trash.bak"), "content").unwrap();
+    fs::write(source_dir.path().join("keep.bak"), "content").unwrap();
+
+    let ignore_file = source_dir.path().join(".enstowignore");
+    fs::write(&ignore_file, "*.bak\n!keep.bak\n").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        dry_run: true,
+        force: false,
+        prune: false,
+        age_key_file: None,
+        packages: Vec::new(),
+        ignore: Vec::new(),
+        ..Default::default()
+    };
+
+    let plan = plan_stow(&args).unwrap();
+    let targets: Vec<String> = plan
+        .iter()
+        .map(|a| {
+            a.target()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+
+    assert_eq!(targets.len(), 2);
+    assert!(targets.contains(&"app.conf".to_string()));
+    assert!(targets.contains(&"keep.bak".to_string()));
+}
+
+#[test]
+fn test_gitignore_anchored_and_directory_syntax() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let build_dir = source_dir.path().join("build");
+    fs::create_dir_all(&build_dir).unwrap();
+    fs::write(build_dir.join("nested.txt"), "build content").unwrap();
+
+    let subdir = source_dir.path().join("subdir");
+    fs::create_dir_all(&subdir).unwrap();
+    fs::write(subdir.join("build.txt"), "not in build dir").unwrap();
+    fs::write(subdir.join("only_at_root.txt"), "nested file").unwrap();
+
+    fs::write(source_dir.path().join("only_at_root.txt"), "root file").unwrap();
+    fs::write(source_dir.path().join("app.conf"), "app config").unwrap();
+
+    let ignore_file = source_dir.path().join(".enstowignore");
+    fs::write(&ignore_file, "build/\n/only_at_root.txt\n").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        dry_run: true,
+        force: false,
+        prune: false,
+        age_key_file: None,
+        packages: Vec::new(),
+        ignore: Vec::new(),
+        ..Default::default()
+    };
+
+    let plan = plan_stow(&args).unwrap();
+    let targets: Vec<String> = plan
+        .iter()
+        .map(|a| {
+            a.target()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+
+    assert_eq!(targets.len(), 3);
+    assert!(targets.contains(&"app.conf".to_string()));
+    assert!(targets.contains(&"build.txt".to_string()));
+    assert!(targets.contains(&"only_at_root.txt".to_string()));
+    // And verify the only_at_root.txt target is the one in subdir
+    let root_file_stowed = plan
+        .iter()
+        .any(|a| a.source() == source_dir.path().join("only_at_root.txt"));
+    assert!(!root_file_stowed);
+}
+
+#[test]
+fn test_gitignore_recursive_and_character_class_syntax() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let logs1 = source_dir.path().join("logs");
+    fs::create_dir_all(&logs1).unwrap();
+    fs::write(logs1.join("a.log"), "log").unwrap();
+
+    let deep_logs = source_dir.path().join("deep").join("nested").join("logs");
+    fs::create_dir_all(&deep_logs).unwrap();
+    fs::write(deep_logs.join("b.log"), "log").unwrap();
+
+    fs::write(source_dir.path().join("cache1.tmp"), "cache").unwrap();
+    fs::write(source_dir.path().join("cacheA.tmp"), "cache").unwrap();
+    fs::write(source_dir.path().join("app.conf"), "app").unwrap();
+
+    let ignore_file = source_dir.path().join(".enstowignore");
+    fs::write(&ignore_file, "**/logs/*.log\ncache[0-9].tmp\n").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        dry_run: true,
+        force: false,
+        prune: false,
+        age_key_file: None,
+        packages: Vec::new(),
+        ignore: Vec::new(),
+        ..Default::default()
+    };
+
+    let plan = plan_stow(&args).unwrap();
+    let targets: Vec<String> = plan
+        .iter()
+        .map(|a| {
+            a.target()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+
+    assert_eq!(targets.len(), 2);
+    assert!(targets.contains(&"app.conf".to_string()));
+    assert!(targets.contains(&"cacheA.tmp".to_string()));
+}

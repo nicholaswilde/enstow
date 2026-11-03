@@ -221,12 +221,46 @@ enstow edit secret.env.age --editor "nano"
 
 ### Ignore Rules
 
-Ignore specific files or patterns during dotfile operations:
+Ignore specific files or patterns during dotfile operations using Git-style ignore syntax:
 
-1. **Package Ignore File:** Create `.enstowignore` or `.stow-local-ignore` inside a package root.
+1. **Package Ignore File:** Create `.enstowignore` (or fallback `.stow-local-ignore`) inside a package root or source root.
 2. **CLI Flags:** Pass `-i` / `--ignore` multiple times.
 3. **Environment Variable:** Set `ENSTOW_IGNORE` (comma or colon separated).
 4. **Configuration File:** Specify `ignore = ["*.tmp", ".DS_Store"]`.
+
+#### Git-Style Ignore Syntax
+
+> [!NOTE]
+> `enstow` does not support GNU Stow Perl regular expression syntax. All ignore files (including `.stow-local-ignore`) and pattern arguments are evaluated strictly using Git-style ignore rules.
+
+`enstow` uses standard `.gitignore` semantics exclusively (dropping Stow Perl regexes):
+
+- **Wildcards:** `*.bak`, `temp_*.log` match across directories.
+- **Recursive Directory Matching:** `**/logs/*.log` matches nested paths.
+- **Directory Exclusions:** Trailing slash `build/` ignores entire directories and skips traversal.
+- **Root Anchoring:** Leading slash `/only_at_root.txt` matches only at the package root.
+- **Negation / Whitelisting:** Prefix `!` re-includes previously ignored files (e.g. `!keep.bak`).
+- **Character Classes:** `cache[0-9].tmp`.
+- **Comments & Blanks:** Lines beginning with `#` and empty lines are ignored.
+
+Example `.enstowignore`:
+
+```gitignore
+# Ignore editor and temporary artifacts
+*.swp
+*.bak
+*~
+
+# Ignore build directory
+build/
+
+# Ignore nested log files but keep one specific log
+**/logs/*.log
+!**/logs/keep.log
+
+# Ignore a file only at package root
+/install.sh
+```
 
 ```bash
 # Ignore patterns via CLI flags

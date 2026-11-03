@@ -1,6 +1,7 @@
 use crate::cli::CommonArgs;
 use crate::crypto::{detect_secret_type, target_plaintext_name};
 use crate::error::EnstowError;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::{Path, PathBuf};
 use tracing::info;
 use walkdir::WalkDir;
@@ -104,13 +105,10 @@ pub fn check_status(
 pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let source_path = args.source_path();
     let target_path = args.target_path();
-    let source_root = source_path.canonicalize().map_err(|e| EnstowError::Io {
+    let source_root = normalize_path(&source_path.canonicalize().map_err(|e| EnstowError::Io {
         path: source_path.to_path_buf(),
         source: e,
-    })?;
-
-    let mut root_ignore_patterns = load_ignore_patterns(&source_root);
-    root_ignore_patterns.extend(args.ignore.clone());
+    })?);
 
     let pkg_roots = if args.packages.is_empty() {
         vec![source_root.clone()]
@@ -118,10 +116,11 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
         let mut roots = Vec::new();
         for pkg in &args.packages {
             let pkg_path = source_root.join(pkg);
-            let canonical = pkg_path.canonicalize().map_err(|e| EnstowError::Io {
-                path: pkg_path.clone(),
-                source: e,
-            })?;
+            let canonical =
+                normalize_path(&pkg_path.canonicalize().map_err(|e| EnstowError::Io {
+                    path: pkg_path.clone(),
+                    source: e,
+                })?);
             if !canonical.is_dir() {
                 return Err(EnstowError::Config(format!(
                     "Package '{}' is not a directory: {}",
@@ -137,16 +136,15 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let mut actions = Vec::new();
 
     for pkg_root in pkg_roots {
-        let mut ignore_patterns = root_ignore_patterns.clone();
-        if pkg_root != source_root {
-            ignore_patterns.extend(load_ignore_patterns(&pkg_root));
-        }
+        let gitignore = build_gitignore(&pkg_root, &source_root, &args.ignore);
 
         for entry in WalkDir::new(&pkg_root)
             .min_depth(1)
             .into_iter()
             .filter_entry(|e| {
-                !is_ignored(e.file_name().to_str().unwrap_or_default(), &ignore_patterns)
+                !gitignore
+                    .matched_path_or_any_parents(e.path(), e.file_type().is_dir())
+                    .is_ignore()
             })
         {
             let entry = entry.map_err(|e| EnstowError::Io {
@@ -557,76 +555,51 @@ fn clean_empty_parents(path: &Path, stop_at: &Path) {
     }
 }
 
-fn load_ignore_patterns(root: &Path) -> Vec<String> {
-    let mut patterns = Vec::new();
-    let candidates = [root.join(".enstowignore"), root.join(".stow-local-ignore")];
+const DEFAULT_IGNORES: &[&str] = &[
+    ".git",
+    ".gitignore",
+    ".codegraph",
+    ".serena",
+    ".agents",
+    ".github",
+    "target",
+    "Cargo.lock",
+    ".enstowignore",
+    ".stow-local-ignore",
+];
 
-    for file in candidates {
-        if let Ok(content) = std::fs::read_to_string(&file) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    patterns.push(trimmed.to_string());
-                }
+fn build_gitignore(pkg_root: &Path, source_root: &Path, extra_patterns: &[String]) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(pkg_root);
+
+    // Default ignored files and directories across dotfile repositories
+    for pat in DEFAULT_IGNORES {
+        let _ = builder.add_line(None, pat);
+    }
+
+    // Global ignore files at source root if different from package root
+    if pkg_root != source_root {
+        for candidate in [".stow-local-ignore", ".enstowignore"] {
+            let path = source_root.join(candidate);
+            if path.is_file() {
+                builder.add(path);
             }
         }
     }
 
-    patterns
-}
-
-fn is_ignored(name: &str, patterns: &[String]) -> bool {
-    let default_ignored = matches!(
-        name,
-        ".git"
-            | ".gitignore"
-            | ".codegraph"
-            | ".serena"
-            | ".agents"
-            | ".github"
-            | "target"
-            | "Cargo.lock"
-            | ".enstowignore"
-            | ".stow-local-ignore"
-    );
-
-    if default_ignored {
-        return true;
-    }
-
-    for pattern in patterns {
-        if glob_matches(pattern, name) {
-            return true;
+    // Package-level ignore files (.enstowignore and fallback .stow-local-ignore)
+    for candidate in [".stow-local-ignore", ".enstowignore"] {
+        let path = pkg_root.join(candidate);
+        if path.is_file() {
+            builder.add(path);
         }
     }
 
-    false
-}
-
-fn glob_matches(pattern: &str, text: &str) -> bool {
-    if pattern == text {
-        return true;
+    // CLI --ignore args, ENSTOW_IGNORE env, and config file ignore patterns
+    for pat in extra_patterns {
+        let _ = builder.add_line(None, pat.trim());
     }
 
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        if !suffix.contains('*') {
-            return text.ends_with(suffix);
-        }
-    }
-
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        if !prefix.contains('*') {
-            return text.starts_with(prefix);
-        }
-    }
-
-    // Ponytail simple wildcard matching
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 2 {
-        return text.starts_with(parts[0]) && text.ends_with(parts[1]);
-    }
-
-    false
+    builder.build().unwrap_or_else(|_| Gitignore::empty())
 }
 
 fn strip_verbatim_prefix(path: &Path) -> PathBuf {

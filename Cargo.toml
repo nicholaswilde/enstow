@@ -19,6 +19,7 @@ serde_json = "1.0"
 serde_yaml_ng = "0.10"
 toml = "0.8"
 age = { version = "0.12.1", features = ["ssh", "armor"] }
+ignore = "0.4"
 tempfile = "3.16"
 
 [profile.release]
