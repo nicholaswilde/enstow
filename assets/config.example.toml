@@ -48,3 +48,5 @@
 # Output status in JSON format by default ($ENSTOW_JSON or --json)
 # json = false
 
+# Mask sensitive secret contents in diff output ($ENSTOW_MASK_SECRETS or --mask-secrets)
+# mask_secrets = false

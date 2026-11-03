@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 use walkdir::WalkDir;
 
-#[derive(Debug, PartialEq, Eq, Clone, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FileAction {
     Symlink { source: PathBuf, target: PathBuf },
     Decrypt { source: PathBuf, target: PathBuf },

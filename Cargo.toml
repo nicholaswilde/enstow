@@ -21,6 +21,7 @@ toml = "0.8"
 age = { version = "0.12.1", features = ["ssh", "armor"] }
 ignore = "0.4"
 tempfile = "3.16"
+similar = "3.2.1"
 
 [profile.release]
 opt-level = "z"

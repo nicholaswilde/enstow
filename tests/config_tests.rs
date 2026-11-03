@@ -2,8 +2,8 @@ use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{
     load_config, parse_bool_env, resolve_age_key_file, resolve_common_args, resolve_editor,
-    resolve_ignore_patterns, resolve_json, resolve_log_level, resolve_recipients, ConfigFile,
-    ConfigFormat,
+    resolve_ignore_patterns, resolve_json, resolve_log_level, resolve_mask_secrets,
+    resolve_recipients, ConfigFile, ConfigFormat,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1051,5 +1051,43 @@ fn test_config_error_paths_and_fallbacks() {
     }
     if let Some(v) = orig_bdir {
         std::env::set_var("ENSTOW_BACKUP_DIR", v);
+    }
+}
+
+#[test]
+fn test_resolve_mask_secrets_precedence() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+
+    let orig_env = std::env::var_os("ENSTOW_MASK_SECRETS");
+
+    // 1. Default when neither CLI, env, nor config
+    assert!(!resolve_mask_secrets(false, None));
+
+    // 2. Config file sets mask_secrets = true
+    let cfg_true = ConfigFile {
+        mask_secrets: Some(true),
+        ..Default::default()
+    };
+    assert!(resolve_mask_secrets(false, Some(&cfg_true)));
+
+    // 3. Environment variable overrides config file
+    std::env::set_var("ENSTOW_MASK_SECRETS", "false");
+    assert!(!resolve_mask_secrets(false, Some(&cfg_true)));
+
+    std::env::set_var("ENSTOW_MASK_SECRETS", "1");
+    let cfg_false = ConfigFile {
+        mask_secrets: Some(false),
+        ..Default::default()
+    };
+    assert!(resolve_mask_secrets(false, Some(&cfg_false)));
+
+    // 4. CLI flag overrides environment variable and config
+    std::env::set_var("ENSTOW_MASK_SECRETS", "false");
+    assert!(resolve_mask_secrets(true, Some(&cfg_false)));
+
+    // Cleanup
+    std::env::remove_var("ENSTOW_MASK_SECRETS");
+    if let Some(v) = orig_env {
+        std::env::set_var("ENSTOW_MASK_SECRETS", v);
     }
 }

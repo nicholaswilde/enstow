@@ -170,6 +170,21 @@ fn test_cli_subcommands_end_to_end() {
     assert!(tgt.path().join(".bashrc").exists());
     assert!(tgt.path().join("secret.env").exists());
 
+    // Subcommand: Diff
+    let output = Command::new(bin)
+        .args([
+            "diff",
+            "-s",
+            src.path().to_str().unwrap(),
+            "-t",
+            tgt.path().to_str().unwrap(),
+            "--age-key-file",
+            key_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "diff failed: {:?}", output);
+
     // Subcommand: Restow
     let output = Command::new(bin)
         .args([

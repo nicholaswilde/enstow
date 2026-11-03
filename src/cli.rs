@@ -156,6 +156,19 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show diff between dotfiles and target destination
+    Diff {
+        #[command(flatten)]
+        common: CommonArgs,
+
+        /// Output diff in JSON format ($ENSTOW_JSON)
+        #[arg(long)]
+        json: bool,
+
+        /// Mask sensitive secret contents in diff output
+        #[arg(long, alias = "no-secrets")]
+        mask_secrets: bool,
+    },
     /// Generate UNIX roff man page
     Man,
     /// Generate shell completions

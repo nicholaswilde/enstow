@@ -69,6 +69,7 @@ pub struct ConfigFile {
     pub log_level: Option<String>,
     pub backup: Option<bool>,
     pub backup_dir: Option<PathBuf>,
+    pub mask_secrets: Option<bool>,
 }
 
 impl ConfigFile {
@@ -389,6 +390,19 @@ pub fn resolve_json(cli_json: bool, config: Option<&ConfigFile>) -> bool {
         } else {
             false
         }
+    } else {
+        false
+    }
+}
+
+/// Resolve mask_secrets precedence: CLI (--mask-secrets / --no-secrets) > ENSTOW_MASK_SECRETS > Config (mask_secrets) > Default (false)
+pub fn resolve_mask_secrets(cli_mask_secrets: bool, config: Option<&ConfigFile>) -> bool {
+    if cli_mask_secrets {
+        true
+    } else if let Some(env_mask) = parse_bool_env("ENSTOW_MASK_SECRETS") {
+        env_mask
+    } else if let Some(cfg) = config {
+        cfg.mask_secrets.unwrap_or(false)
     } else {
         false
     }

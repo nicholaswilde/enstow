@@ -85,6 +85,36 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Diff {
+            common,
+            json,
+            mask_secrets,
+        }) => {
+            let resolved_common =
+                enstow::config::resolve_common_args(&common, config.as_ref()).to_common_args();
+            let json = enstow::config::resolve_json(json, config.as_ref());
+            let mask_secrets = enstow::config::resolve_mask_secrets(mask_secrets, config.as_ref());
+            let actions = stow::plan_stow(&resolved_common)?;
+            let diffs = enstow::diff::compute_diff(
+                &actions,
+                resolved_common.age_key_file.as_deref(),
+                mask_secrets,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&diffs)?);
+            } else {
+                use std::io::IsTerminal;
+                let colorize =
+                    std::io::stdout().is_terminal() && std::env::var("NO_COLOR").is_err();
+                for file_diff in &diffs {
+                    if colorize {
+                        print!("{}", enstow::diff::colorize_diff(&file_diff.diff));
+                    } else {
+                        print!("{}", file_diff.diff);
+                    }
+                }
+            }
+        }
         Some(Commands::Encrypt {
             file,
             output,
