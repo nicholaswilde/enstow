@@ -18,7 +18,8 @@ A high-performance, single-binary CLI secret-aware dotfile manager combining GNU
 ## :sparkles: Features
 
 - **Symlink Management:** Scans dotfile directories and cleanly links non-secret files into target destination (default: `$HOME`).
-- **Secret Decryption:** Recognizes encrypted secret files (`.sops.yaml`, `.age`, etc.), decrypts them in memory, and writes plaintext files to the destination with restricted permissions (`0600`).
+- **Dotfile Ingestion & Adoption:** Ingest machine dotfiles into packages (`enstow add`) with optional age encryption (`--encrypt`), or adopt conflicting machine dotfiles during apply (`enstow apply --adopt`).
+- **Secret Decryption & SSH Keys:** Recognizes encrypted secret files (`.sops.yaml`, `.age`), decrypts them in memory using native age keys or SSH keys (`ssh-ed25519`, `ssh-rsa`), and writes plaintext files to the destination with restricted permissions (`0600`).
 - **Modular Packages:** Organizes dotfiles into modular packages (e.g. `zsh`, `nvim`, `git`).
 - **Unstow & Restow:** Unlink managed dotfiles cleanly or restow packages to prune stale links and re-apply in one step.
 - **Collision & Backup Handling:** Detects conflicts with existing target files, with options to preview (`--dry-run`), overwrite (`--force`), or relocate conflicting files to a backup directory (`--backup`, `--backup-dir`).
@@ -77,6 +78,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
+| `add` | Ingest an existing machine dotfile into a package as a symlink or encrypted secret | `enstow add <file> -p <pkg> [--encrypt]` |
 | `apply` | Symlink regular files and decrypt secret files to target destination | `enstow apply [PACKAGES...]` |
 | `restow` | Clean stale symlinks/secrets and re-apply packages in one step | `enstow restow [PACKAGES...]` |
 | `unstow` | Remove symlinks and decrypted secret files managed by enstow | `enstow unstow [PACKAGES...]` |
@@ -111,6 +113,24 @@ enstow apply -b --backup-dir ~/.dotfiles-backup zsh
 
 # Prune stale symlinks no longer present in source packages
 enstow apply --prune zsh
+```
+
+### Ingesting Dotfiles (`enstow add`)
+
+Onboard existing machine dotfiles into a package, preserving their relative directory hierarchy:
+
+```bash
+# Ingest an existing config into a package and replace it with a symlink
+enstow add ~/.config/app/config.json -p app
+
+# Ingest and encrypt into an .age secret file, deploying decrypted secret with 0600 mode
+enstow add ~/.secrets/api.env -p secrets --encrypt
+
+# Preview actions without filesystem mutations
+enstow add ~/.bashrc -p shell --dry-run
+
+# Overwrite existing package file if it conflicts
+enstow add ~/.config/nvim/init.lua -p nvim --force
 ```
 
 ### Restowing Packages
@@ -168,6 +188,7 @@ States reported:
 When a target destination already exists with different content or unmanaged files:
 
 - **Dry-run (`-n`, `--dry-run`):** Previews what actions would occur without touching disk.
+- **Adopt (`--adopt`):** Copies conflicting target files into the source package (overwriting source) and re-links.
 - **Force (`-f`, `--force`):** Overwrites conflicting target files or replaces differing symlinks.
 - **Backup (`-b`, `--backup`):** Relocates colliding destination files out of the way before creating the new link or secret.
 - **Backup Directory (`--backup-dir <path>`):** Sets custom destination for backups (defaults to `$TARGET/.enstow-backup`).
@@ -175,6 +196,9 @@ When a target destination already exists with different content or unmanaged fil
 ```bash
 # Safely apply with backup
 enstow apply -b --backup-dir ~/backup-dir zsh
+
+# Adopt existing target files into source package and replace with symlinks
+enstow apply --adopt zsh
 ```
 
 ### Pruning Stale Symlinks
@@ -218,6 +242,46 @@ enstow edit secret.env.age --age-key-file ~/.config/sops/age/keys.txt
 # Edit using specific editor command
 enstow edit secret.env.age --editor "nano"
 ```
+
+### SSH Key Encryption & Decryption
+
+`enstow` natively supports SSH public and private keys (`ssh-ed25519` and `ssh-rsa`) for secret encryption and decryption:
+
+#### Encrypting with SSH Keys
+
+Encrypt dotfiles directly with SSH credentials without generating a separate age keypair:
+
+```bash
+# Encrypt using raw SSH public key string
+enstow encrypt secret.env -r "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+enstow encrypt secret.env -r "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB..."
+
+# Encrypt using an SSH public key file
+enstow encrypt secret.env -r ~/.ssh/id_ed25519.pub
+
+# Derive recipient public key directly from SSH private key
+enstow encrypt secret.env --age-key-file ~/.ssh/id_ed25519
+
+# Ingest dotfile into a package and encrypt to SSH key
+enstow add ~/.secrets/api.env -p secrets --encrypt -r ~/.ssh/id_ed25519.pub
+```
+
+#### Decrypting with SSH Keys
+
+During `apply`, `status`, or `edit`, secret files are decrypted in memory using:
+
+- **Automatic SSH Key Discovery:** When `--age-key-file` is omitted, `enstow` automatically checks:
+  1. `~/.config/sops/age/keys.txt`
+  2. `~/.ssh/id_ed25519`
+  3. `~/.ssh/id_rsa`
+- **Explicit Identity File:**
+
+  ```bash
+  enstow apply --age-key-file ~/.ssh/id_ed25519
+  ```
+
+- **Passphrase-Protected Keys:**
+  If an SSH private key is encrypted with a passphrase, `enstow` prompts interactively via terminal, or reads non-interactively from `ENSTOW_SSH_PASSPHRASE` or `SSH_PASSPHRASE`.
 
 ### Ignore Rules
 
@@ -479,8 +543,11 @@ log_level: info
 | `ENSTOW_BACKUP` | `backup` | `-b`, `--backup` | Move colliding destination files to backup directory (`true`/`false`) | `false` |
 | `ENSTOW_BACKUP_DIR` | `backup_dir` | `--backup-dir` | Path to directory where conflicting files are relocated | `$TARGET/.enstow-backup` |
 | `ENSTOW_PRUNE` | `prune` | `--prune` | Prune stale managed symlinks during apply (`true`/`false`) | `false` |
+| `ENSTOW_ADOPT` | `adopt` | `--adopt` | Adopt conflicting destination files into source package during apply (`true`/`false`) | `false` |
 | `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | `age_key_file` | `--age-key-file` | Path to age identity key file for encryption/decryption | None |
-| `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | `recipients` | `-r`, `--recipient` | Age recipient public keys for encryption | None |
+| `ENSTOW_SSH_KEY_FILE` | N/A | `--age-key-file` | Path to SSH private key identity file for decryption / recipient derivation | `~/.ssh/id_ed25519`, `~/.ssh/id_rsa` |
+| `ENSTOW_SSH_PASSPHRASE` / `SSH_PASSPHRASE` | N/A | N/A | Passphrase for encrypted SSH private key identities | None (prompts interactively) |
+| `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | `recipients` | `-r`, `--recipient` | Age or SSH recipient public keys for encryption | None |
 | `ENSTOW_PACKAGES` | `packages` | `PACKAGES` | Default packages to stow when none specified | None |
 | `ENSTOW_PROFILE` | `default_profile` / `profiles` | `--profile` | Profile to select packages from configuration | None |
 | `ENSTOW_IGNORE` | `ignore` | `-i`, `--ignore` | Additional glob patterns to ignore (comma or colon separated) | None |
