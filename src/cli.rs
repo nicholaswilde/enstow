@@ -76,6 +76,10 @@ pub struct CommonArgs {
     #[arg(long)]
     pub prune: bool,
 
+    /// Adopt existing files into source package when conflicts occur
+    #[arg(long)]
+    pub adopt: bool,
+
     /// Explicit path to age identity key file
     #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,
@@ -111,6 +115,43 @@ impl CommonArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Add an existing target file to a package and replace it with a symlink or secret
+    Add {
+        /// Target file to add into the package
+        file: PathBuf,
+
+        /// Package to add the file to
+        #[arg(short, long)]
+        package: String,
+
+        /// Encrypt the file into an age secret instead of storing plaintext
+        #[arg(short = 'e', long)]
+        encrypt: bool,
+
+        /// Recipient public key(s) when encrypting
+        #[arg(short, long)]
+        recipient: Vec<String>,
+
+        /// Explicit path to age identity key file
+        #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
+        age_key_file: Option<PathBuf>,
+
+        /// Source directory containing dotfiles
+        #[arg(short, long)]
+        source: Option<PathBuf>,
+
+        /// Target root directory
+        #[arg(short, long)]
+        target: Option<PathBuf>,
+
+        /// Overwrite existing source files if they exist
+        #[arg(short, long)]
+        force: bool,
+
+        /// Preview actions without writing changes to disk
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
     /// Apply dotfiles: symlink regular files and decrypt secret files
     #[command(alias = "sync")]
     Apply(CommonArgs),

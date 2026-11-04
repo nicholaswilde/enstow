@@ -459,6 +459,7 @@ pub fn execute_plan_with_backup(
         backup_dir,
         target_root,
         None,
+        false,
     )
 }
 
@@ -472,6 +473,7 @@ pub fn execute_plan_with_backup_and_permissions(
     backup_dir: Option<&Path>,
     target_root: Option<&Path>,
     permissions: Option<&crate::config::PermissionsConfig>,
+    adopt: bool,
 ) -> Result<(), EnstowError> {
     for action in actions {
         match action {
@@ -481,10 +483,44 @@ pub fn execute_plan_with_backup_and_permissions(
                 }
 
                 if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if !force && !backup {
+                    if !force && !backup && !adopt {
                         return Err(EnstowError::Collision {
                             path: target.to_path_buf(),
                         });
+                    }
+
+                    if adopt {
+                        if dry_run {
+                            println!(
+                                "[dry-run] ADOPT {} -> {}",
+                                target.display(),
+                                source.display()
+                            );
+                            println!(
+                                "[dry-run] LINK  {} -> {}",
+                                target.display(),
+                                source.display()
+                            );
+                            continue;
+                        }
+
+                        if let Some(parent) = source.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
+                                path: parent.to_path_buf(),
+                                source: e,
+                            })?;
+                        }
+                        std::fs::copy(target, source).map_err(|e| EnstowError::Io {
+                            path: source.to_path_buf(),
+                            source: e,
+                        })?;
+                        #[cfg(unix)]
+                        {
+                            let _ = std::fs::set_permissions(source, meta.permissions());
+                        }
+                        remove_target(target, &meta)?;
+                        create_symlink(source, target, true)?;
+                        continue;
                     }
 
                     let backup_dest =
@@ -532,10 +568,40 @@ pub fn execute_plan_with_backup_and_permissions(
                     .unwrap_or(0o600);
                 let target_exists = std::fs::symlink_metadata(target).is_ok();
                 if target_exists {
-                    if !force && !backup {
+                    if !force && !backup && !adopt {
                         return Err(EnstowError::Collision {
                             path: target.to_path_buf(),
                         });
+                    }
+
+                    if adopt {
+                        if dry_run {
+                            println!(
+                                "[dry-run] ADOPT {} -> {}",
+                                target.display(),
+                                source.display()
+                            );
+                            println!(
+                                "[dry-run] DECRYPT {} -> {} (mode {:04o})",
+                                source.display(),
+                                target.display(),
+                                mode
+                            );
+                            continue;
+                        }
+
+                        let plaintext = std::fs::read(target).map_err(|e| EnstowError::Io {
+                            path: target.to_path_buf(),
+                            source: e,
+                        })?;
+                        let recipients = crate::crypto::resolve_age_recipients(&[], age_key_file)?;
+                        crate::crypto::encrypt_bytes_age_with_recipients(
+                            &plaintext,
+                            source,
+                            &recipients,
+                        )?;
+                        crate::crypto::write_secure_file_with_mode(target, &plaintext, true, mode)?;
+                        continue;
                     }
 
                     let backup_dest =
@@ -946,6 +1012,161 @@ fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), Ensto
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn add_file(
+    file: &Path,
+    package: &str,
+    encrypt: bool,
+    recipient: &[String],
+    age_key_file: Option<&Path>,
+    source: &Path,
+    target: &Path,
+    force: bool,
+    dry_run: bool,
+) -> Result<(PathBuf, PathBuf), EnstowError> {
+    let expanded_file = if let Ok(stripped) = file.strip_prefix("~") {
+        target.join(stripped)
+    } else {
+        file.to_path_buf()
+    };
+
+    let target_path = if expanded_file.is_absolute() {
+        expanded_file
+    } else if expanded_file.exists() {
+        std::env::current_dir()
+            .map_err(|e| EnstowError::Io {
+                path: PathBuf::from("."),
+                source: e,
+            })?
+            .join(&expanded_file)
+    } else if target.join(&expanded_file).exists() {
+        target.join(&expanded_file)
+    } else {
+        expanded_file
+    };
+
+    let meta = std::fs::symlink_metadata(&target_path).map_err(|e| EnstowError::Io {
+        path: target_path.clone(),
+        source: e,
+    })?;
+
+    if meta.file_type().is_dir() {
+        return Err(EnstowError::Config(format!(
+            "Cannot add directory '{}': please specify a file",
+            target_path.display()
+        )));
+    }
+
+    let canonical_target_path =
+        normalize_path(&target_path.canonicalize().map_err(|e| EnstowError::Io {
+            path: target_path.clone(),
+            source: e,
+        })?);
+    let target_root = normalize_path(&target.canonicalize().map_err(|e| EnstowError::Io {
+        path: target.to_path_buf(),
+        source: e,
+    })?);
+
+    let rel_path = canonical_target_path
+        .strip_prefix(&target_root)
+        .map_err(|_| {
+            EnstowError::Config(format!(
+                "File '{}' is not within target directory '{}'",
+                target_path.display(),
+                target_root.display()
+            ))
+        })?;
+
+    let source_root = normalize_path(&source.canonicalize().map_err(|e| EnstowError::Io {
+        path: source.to_path_buf(),
+        source: e,
+    })?);
+
+    if canonical_target_path.starts_with(&source_root) {
+        return Err(EnstowError::Config(format!(
+            "File '{}' is already inside source repository",
+            target_path.display()
+        )));
+    }
+
+    let pkg_dir = source_root.join(package);
+    let dest_source = if encrypt {
+        let mut p = pkg_dir.join(rel_path).into_os_string();
+        p.push(".age");
+        PathBuf::from(p)
+    } else {
+        pkg_dir.join(rel_path)
+    };
+
+    if (dest_source.exists() || std::fs::symlink_metadata(&dest_source).is_ok()) && !force {
+        return Err(EnstowError::Collision { path: dest_source });
+    }
+
+    if !encrypt && is_symlink_to(&target_path, &dest_source) {
+        return Ok((target_path, dest_source));
+    }
+
+    if dry_run {
+        if encrypt {
+            println!(
+                "[dry-run] ENCRYPT {} -> {}",
+                target_path.display(),
+                dest_source.display()
+            );
+            println!(
+                "[dry-run] DECRYPT {} -> {} (mode 0600)",
+                dest_source.display(),
+                target_path.display()
+            );
+        } else {
+            println!(
+                "[dry-run] ADD {} -> {}",
+                target_path.display(),
+                dest_source.display()
+            );
+            println!(
+                "[dry-run] LINK  {} -> {}",
+                target_path.display(),
+                dest_source.display()
+            );
+        }
+        return Ok((target_path, dest_source));
+    }
+
+    if encrypt {
+        let plaintext = std::fs::read(&target_path).map_err(|e| EnstowError::Io {
+            path: target_path.clone(),
+            source: e,
+        })?;
+        let recipient_list = crate::crypto::resolve_age_recipients(recipient, age_key_file)?;
+        crate::crypto::encrypt_bytes_age_with_recipients(
+            &plaintext,
+            &dest_source,
+            &recipient_list,
+        )?;
+        crate::crypto::write_secure_file_with_mode(&target_path, &plaintext, true, 0o600)?;
+    } else {
+        if let Some(parent) = dest_source.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+        }
+        std::fs::copy(&target_path, &dest_source).map_err(|e| EnstowError::Io {
+            path: dest_source.clone(),
+            source: e,
+        })?;
+        #[cfg(unix)]
+        {
+            let _ = std::fs::set_permissions(&dest_source, meta.permissions());
+        }
+        remove_target(&target_path, &meta)?;
+        create_symlink(&dest_source, &target_path, true)?;
+    }
+
+    Ok((target_path, dest_source))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,6 +1193,7 @@ mod tests {
             ignore: Vec::new(),
             backup: false,
             backup_dir: None,
+            adopt: false,
         };
 
         let actions = plan_stow(&args).unwrap();

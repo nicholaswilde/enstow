@@ -19,6 +19,58 @@ fn main() -> anyhow::Result<()> {
     tracing::debug!("Log level initialized to '{}'", log_level);
 
     match cli.command {
+        Some(Commands::Add {
+            file,
+            package,
+            encrypt,
+            recipient,
+            age_key_file,
+            source,
+            target,
+            force,
+            dry_run,
+        }) => {
+            let resolved_source =
+                enstow::config::resolve_source(source.as_deref(), config.as_ref());
+            let resolved_target =
+                enstow::config::resolve_target(target.as_deref(), config.as_ref());
+            let resolved_recipients =
+                enstow::config::resolve_recipients(&recipient, config.as_ref());
+            let resolved_key_file =
+                enstow::config::resolve_age_key_file(age_key_file.as_deref(), config.as_ref());
+            let resolved_dry_run = enstow::config::resolve_dry_run(dry_run, config.as_ref());
+            let resolved_force = if force {
+                true
+            } else if let Some(env_force) = enstow::config::parse_bool_env("ENSTOW_FORCE") {
+                env_force
+            } else {
+                config.as_ref().and_then(|c| c.force).unwrap_or_default()
+            };
+
+            let (target_p, source_p) = enstow::stow::add_file(
+                &file,
+                &package,
+                encrypt,
+                &resolved_recipients,
+                resolved_key_file.as_deref(),
+                &resolved_source,
+                &resolved_target,
+                resolved_force,
+                resolved_dry_run,
+            )?;
+
+            if !resolved_dry_run {
+                if encrypt {
+                    println!(
+                        "Added and encrypted {} -> {}",
+                        target_p.display(),
+                        source_p.display()
+                    );
+                } else {
+                    println!("Added {} -> {}", target_p.display(), source_p.display());
+                }
+            }
+        }
         Some(Commands::Apply(args)) => {
             let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
             let common = resolved.to_common_args();
@@ -36,6 +88,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&common.backup_dir_path()),
                 Some(&common.target_path()),
                 Some(&resolved.permissions),
+                common.adopt,
             )?;
         }
         Some(Commands::Restow(args)) => {
@@ -53,6 +106,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&common.backup_dir_path()),
                 Some(&common.target_path()),
                 Some(&resolved.permissions),
+                common.adopt,
             )?;
         }
         Some(Commands::Unstow(args)) => {
@@ -267,6 +321,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&common.backup_dir_path()),
                 Some(&common.target_path()),
                 Some(&resolved.permissions),
+                common.adopt,
             )?;
         }
     }

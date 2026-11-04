@@ -118,6 +118,7 @@ pub struct ConfigFile {
     pub dry_run: Option<bool>,
     pub force: Option<bool>,
     pub prune: Option<bool>,
+    pub adopt: Option<bool>,
     pub age_key_file: Option<PathBuf>,
     pub recipients: Option<RecipientsConfig>,
     pub packages: Option<Vec<String>>,
@@ -338,6 +339,7 @@ pub struct ResolvedCommonArgs {
     pub backup: bool,
     pub backup_dir: PathBuf,
     pub permissions: PermissionsConfig,
+    pub adopt: bool,
 }
 
 impl ResolvedCommonArgs {
@@ -354,6 +356,7 @@ impl ResolvedCommonArgs {
             ignore: self.ignore.clone(),
             backup: self.backup,
             backup_dir: Some(self.backup_dir.clone()),
+            adopt: self.adopt,
         }
     }
 }
@@ -499,6 +502,25 @@ pub fn resolve_source(cli_source: Option<&Path>, config: Option<&ConfigFile>) ->
     }
 }
 
+/// Resolve target directory precedence: CLI > ENSTOW_TARGET > Config > Default (HOME / ".")
+pub fn resolve_target(cli_target: Option<&Path>, config: Option<&ConfigFile>) -> PathBuf {
+    if let Some(t) = cli_target {
+        t.to_path_buf()
+    } else if let Ok(t_env) = std::env::var("ENSTOW_TARGET") {
+        if !t_env.trim().is_empty() {
+            PathBuf::from(t_env)
+        } else {
+            config
+                .and_then(|c| c.target.clone())
+                .unwrap_or_else(default_target_dir)
+        }
+    } else if let Some(t) = config.and_then(|c| c.target.clone()) {
+        t
+    } else {
+        default_target_dir()
+    }
+}
+
 /// Resolve dry-run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
 pub fn resolve_dry_run(cli_dry_run: bool, config: Option<&ConfigFile>) -> bool {
     if cli_dry_run {
@@ -519,21 +541,7 @@ pub fn resolve_common_args(
     let source = resolve_source(cli_args.source.as_deref(), config);
 
     // 2. Target precedence: CLI > ENSTOW_TARGET > Config > Default (HOME / ".")
-    let target = if let Some(t) = &cli_args.target {
-        t.clone()
-    } else if let Ok(t_env) = std::env::var("ENSTOW_TARGET") {
-        if !t_env.trim().is_empty() {
-            PathBuf::from(t_env)
-        } else {
-            config
-                .and_then(|c| c.target.clone())
-                .unwrap_or_else(default_target_dir)
-        }
-    } else if let Some(t) = config.and_then(|c| c.target.clone()) {
-        t
-    } else {
-        default_target_dir()
-    };
+    let target = resolve_target(cli_args.target.as_deref(), config);
 
     // 3. Age key file precedence: CLI > ENSTOW_AGE_KEY_FILE > SOPS_AGE_KEY_FILE > Config
     let age_key_file = resolve_age_key_file(cli_args.age_key_file.as_deref(), config);
@@ -595,6 +603,15 @@ pub fn resolve_common_args(
     // 11. Target permissions: from Config permissions and package_permissions
     let permissions = resolve_permissions(config)?;
 
+    // 12. Adopt precedence: CLI (--adopt) > ENSTOW_ADOPT > Config > Default (false)
+    let adopt = if cli_args.adopt {
+        true
+    } else if let Some(env_adopt) = parse_bool_env("ENSTOW_ADOPT") {
+        env_adopt
+    } else {
+        config.and_then(|c| c.adopt).unwrap_or_default()
+    };
+
     Ok(ResolvedCommonArgs {
         source,
         target,
@@ -608,6 +625,7 @@ pub fn resolve_common_args(
         backup,
         backup_dir,
         permissions,
+        adopt,
     })
 }
 

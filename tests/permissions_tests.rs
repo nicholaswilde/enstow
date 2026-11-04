@@ -209,6 +209,7 @@ fn test_end_to_end_custom_permissions_deployment() {
         ignore: Vec::new(),
         backup: false,
         backup_dir: None,
+        ..Default::default()
     };
 
     let resolved = resolve_common_args(&cli_args, Some(&cfg)).unwrap();
@@ -226,6 +227,7 @@ fn test_end_to_end_custom_permissions_deployment() {
         Some(&common.backup_dir_path()),
         Some(&common.target_path()),
         Some(&resolved.permissions),
+        common.adopt,
     )
     .unwrap();
 

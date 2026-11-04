@@ -22,6 +22,7 @@ fn test_generate_manpage_renders_roff() {
     assert!(man_str.contains(".SH DESCRIPTION"));
 
     assert!(man_str.contains("apply"));
+    assert!(man_str.contains("add"));
     assert!(man_str.contains("restow"));
     assert!(man_str.contains("unstow"));
     assert!(man_str.contains("encrypt"));
