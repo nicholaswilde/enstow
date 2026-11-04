@@ -480,14 +480,10 @@ pub fn resolve_profile(cli_profile: Option<&str>, config: Option<&ConfigFile>) -
         })
 }
 
-/// Resolve common arguments across CLI args, environment variables, config file, and defaults.
-pub fn resolve_common_args(
-    cli_args: &CommonArgs,
-    config: Option<&ConfigFile>,
-) -> Result<ResolvedCommonArgs> {
-    // 1. Source precedence: CLI > ENSTOW_SOURCE > Config > Default (".")
-    let source = if let Some(s) = &cli_args.source {
-        s.clone()
+/// Resolve source directory precedence: CLI > ENSTOW_SOURCE > Config > Default (".")
+pub fn resolve_source(cli_source: Option<&Path>, config: Option<&ConfigFile>) -> PathBuf {
+    if let Some(s) = cli_source {
+        s.to_path_buf()
     } else if let Ok(s_env) = std::env::var("ENSTOW_SOURCE") {
         if !s_env.trim().is_empty() {
             PathBuf::from(s_env)
@@ -500,7 +496,27 @@ pub fn resolve_common_args(
         s
     } else {
         PathBuf::from(".")
-    };
+    }
+}
+
+/// Resolve dry-run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
+pub fn resolve_dry_run(cli_dry_run: bool, config: Option<&ConfigFile>) -> bool {
+    if cli_dry_run {
+        true
+    } else if let Some(env_dry_run) = parse_bool_env("ENSTOW_DRY_RUN") {
+        env_dry_run
+    } else {
+        config.and_then(|c| c.dry_run).unwrap_or_default()
+    }
+}
+
+/// Resolve common arguments across CLI args, environment variables, config file, and defaults.
+pub fn resolve_common_args(
+    cli_args: &CommonArgs,
+    config: Option<&ConfigFile>,
+) -> Result<ResolvedCommonArgs> {
+    // 1. Source precedence: CLI > ENSTOW_SOURCE > Config > Default (".")
+    let source = resolve_source(cli_args.source.as_deref(), config);
 
     // 2. Target precedence: CLI > ENSTOW_TARGET > Config > Default (HOME / ".")
     let target = if let Some(t) = &cli_args.target {
@@ -530,13 +546,7 @@ pub fn resolve_common_args(
     let ignore = resolve_ignore_patterns(&cli_args.ignore, config);
 
     // 6. Dry run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
-    let dry_run = if cli_args.dry_run {
-        true
-    } else if let Some(env_dry_run) = parse_bool_env("ENSTOW_DRY_RUN") {
-        env_dry_run
-    } else {
-        config.and_then(|c| c.dry_run).unwrap_or_default()
-    };
+    let dry_run = resolve_dry_run(cli_args.dry_run, config);
 
     // 7. Force precedence: CLI (-f / --force) > ENSTOW_FORCE > Config > Default (false)
     let force = if cli_args.force {

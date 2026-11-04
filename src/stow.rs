@@ -202,6 +202,78 @@ pub fn plan_unstow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     Ok(actions)
 }
 
+/// Find all age encrypted secret files across the specified packages or the source root.
+pub fn find_age_secrets(
+    source_root: &Path,
+    packages: &[String],
+    ignore: &[String],
+) -> Result<Vec<PathBuf>, EnstowError> {
+    let source_canonical =
+        normalize_path(&source_root.canonicalize().map_err(|e| EnstowError::Io {
+            path: source_root.to_path_buf(),
+            source: e,
+        })?);
+
+    let mut roots = Vec::new();
+    let mut individual_files = Vec::new();
+
+    if packages.is_empty() {
+        roots.push(source_canonical.clone());
+    } else {
+        for pkg in packages {
+            let pkg_path = source_canonical.join(pkg);
+            let canonical =
+                normalize_path(&pkg_path.canonicalize().map_err(|e| EnstowError::Io {
+                    path: pkg_path.clone(),
+                    source: e,
+                })?);
+            if canonical.is_dir() {
+                roots.push(canonical);
+            } else if canonical.is_file() {
+                if detect_secret_type(&canonical) == Some(crate::crypto::SecretType::Age) {
+                    individual_files.push(canonical);
+                }
+            } else {
+                return Err(EnstowError::Config(format!(
+                    "Package '{}' is not a directory or file: {}",
+                    pkg,
+                    pkg_path.display()
+                )));
+            }
+        }
+    }
+
+    let mut age_files = individual_files;
+
+    for pkg_root in roots {
+        let gitignore = build_gitignore(&pkg_root, &source_canonical, ignore);
+
+        for entry in WalkDir::new(&pkg_root)
+            .min_depth(1)
+            .into_iter()
+            .filter_entry(|e| {
+                !gitignore
+                    .matched_path_or_any_parents(e.path(), e.file_type().is_dir())
+                    .is_ignore()
+            })
+        {
+            let entry = entry.map_err(|e| EnstowError::Io {
+                path: e.path().unwrap_or(&pkg_root).to_path_buf(),
+                source: std::io::Error::other(e.to_string()),
+            })?;
+
+            let path = entry.path();
+            if !path.is_dir() && detect_secret_type(path) == Some(crate::crypto::SecretType::Age) {
+                age_files.push(path.to_path_buf());
+            }
+        }
+    }
+
+    age_files.sort();
+    age_files.dedup();
+    Ok(age_files)
+}
+
 /// Plan removal of stale symlinks belonging to managed packages that are no longer active dotfiles.
 pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let active_actions = plan_stow(args)?;

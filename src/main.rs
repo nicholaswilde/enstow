@@ -192,6 +192,52 @@ fn main() -> anyhow::Result<()> {
                 println!("No changes made to {}", file.display());
             }
         }
+        Some(Commands::Rekey {
+            recipient,
+            age_key_file,
+            dry_run,
+            source,
+            profile,
+            ignore,
+            packages,
+        }) => {
+            let resolved_source = enstow::config::resolve_source(
+                source.as_deref().or(cli.common.source.as_deref()),
+                config.as_ref(),
+            );
+            let resolved_recipients =
+                enstow::config::resolve_recipients(&recipient, config.as_ref());
+            let resolved_key_file = enstow::config::resolve_age_key_file(
+                age_key_file
+                    .as_deref()
+                    .or(cli.common.age_key_file.as_deref()),
+                config.as_ref(),
+            );
+            let resolved_dry_run =
+                enstow::config::resolve_dry_run(dry_run || cli.common.dry_run, config.as_ref());
+            let resolved_packages = enstow::config::resolve_packages(
+                if !packages.is_empty() {
+                    &packages
+                } else {
+                    &cli.common.packages
+                },
+                profile.as_deref().or(cli.common.profile.as_deref()),
+                config.as_ref(),
+            )?;
+            let mut all_ignores = cli.common.ignore.clone();
+            all_ignores.extend(ignore);
+            let resolved_ignore =
+                enstow::config::resolve_ignore_patterns(&all_ignores, config.as_ref());
+
+            enstow::crypto::rekey_packages(
+                &resolved_source,
+                &resolved_packages,
+                &resolved_ignore,
+                &resolved_recipients,
+                resolved_key_file.as_deref(),
+                resolved_dry_run,
+            )?;
+        }
         Some(Commands::Man) => {
             let mut stdout = std::io::stdout().lock();
             enstow::cli::generate_manpage(&mut stdout)?;

@@ -440,20 +440,10 @@ pub fn encrypt_file_age_with_passphrase(
     Ok(())
 }
 
-pub fn encrypt_file_age(
-    input_path: &Path,
-    output_path: &Path,
+pub fn resolve_age_recipients(
     recipients: &[String],
     age_key_file: Option<&Path>,
-    passphrase: bool,
-) -> Result<(), EnstowError> {
-    use std::io::Write;
-
-    if passphrase {
-        let secret = get_passphrase_for_encrypt()?;
-        return encrypt_file_age_with_passphrase(input_path, output_path, secret);
-    }
-
+) -> Result<Vec<Box<dyn age::Recipient + Send>>, EnstowError> {
     let mut recipient_list: Vec<Box<dyn age::Recipient + Send>> = Vec::new();
 
     // 1. Explicit recipient strings
@@ -499,10 +489,15 @@ pub fn encrypt_file_age(
         ));
     }
 
-    let plaintext = std::fs::read(input_path).map_err(|e| EnstowError::Io {
-        path: input_path.to_path_buf(),
-        source: e,
-    })?;
+    Ok(recipient_list)
+}
+
+pub fn encrypt_bytes_age_with_recipients(
+    plaintext: &[u8],
+    output_path: &Path,
+    recipient_list: &[Box<dyn age::Recipient + Send>],
+) -> Result<(), EnstowError> {
+    use std::io::Write;
 
     let recip_refs: Vec<&dyn age::Recipient> = recipient_list
         .iter()
@@ -528,7 +523,7 @@ pub fn encrypt_file_age(
         .wrap_output(&mut out_file)
         .map_err(|e| EnstowError::Config(format!("Failed to wrap encryptor output: {e}")))?;
 
-    writer.write_all(&plaintext).map_err(|e| EnstowError::Io {
+    writer.write_all(plaintext).map_err(|e| EnstowError::Io {
         path: output_path.to_path_buf(),
         source: e,
     })?;
@@ -539,6 +534,87 @@ pub fn encrypt_file_age(
     })?;
 
     Ok(())
+}
+
+pub fn rekey_file_age_with_recipients(
+    path: &Path,
+    recipient_list: &[Box<dyn age::Recipient + Send>],
+    age_key_file: Option<&Path>,
+) -> Result<(), EnstowError> {
+    let plaintext = decrypt_age(path, age_key_file)?;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temp_file = tempfile::Builder::new()
+        .prefix(".enstow-rekey-")
+        .suffix(".age.tmp")
+        .tempfile_in(parent)
+        .map_err(|e| EnstowError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })?;
+
+    let temp_path = temp_file.into_temp_path();
+
+    encrypt_bytes_age_with_recipients(&plaintext, &temp_path, recipient_list)?;
+
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&temp_path, meta.permissions());
+    }
+
+    temp_path.persist(path).map_err(|e| EnstowError::Io {
+        path: path.to_path_buf(),
+        source: e.error,
+    })?;
+
+    Ok(())
+}
+
+pub fn rekey_packages(
+    source_root: &Path,
+    packages: &[String],
+    ignore: &[String],
+    recipients: &[String],
+    age_key_file: Option<&Path>,
+    dry_run: bool,
+) -> Result<Vec<PathBuf>, EnstowError> {
+    let recipient_list = resolve_age_recipients(recipients, age_key_file)?;
+    let age_files = crate::stow::find_age_secrets(source_root, packages, ignore)?;
+
+    if dry_run {
+        for file in &age_files {
+            println!("[dry-run] REKEY {}", file.display());
+        }
+        return Ok(age_files);
+    }
+
+    for file in &age_files {
+        rekey_file_age_with_recipients(file, &recipient_list, age_key_file)?;
+        println!("Rekeyed {}", file.display());
+    }
+
+    Ok(age_files)
+}
+
+pub fn encrypt_file_age(
+    input_path: &Path,
+    output_path: &Path,
+    recipients: &[String],
+    age_key_file: Option<&Path>,
+    passphrase: bool,
+) -> Result<(), EnstowError> {
+    if passphrase {
+        let secret = get_passphrase_for_encrypt()?;
+        return encrypt_file_age_with_passphrase(input_path, output_path, secret);
+    }
+
+    let recipient_list = resolve_age_recipients(recipients, age_key_file)?;
+
+    let plaintext = std::fs::read(input_path).map_err(|e| EnstowError::Io {
+        path: input_path.to_path_buf(),
+        source: e,
+    })?;
+
+    encrypt_bytes_age_with_recipients(&plaintext, output_path, &recipient_list)
 }
 
 pub fn write_secure_file(path: &Path, content: &[u8], force: bool) -> Result<(), EnstowError> {

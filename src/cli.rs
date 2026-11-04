@@ -169,6 +169,36 @@ pub enum Commands {
         #[arg(long)]
         editor: Option<String>,
     },
+    /// Re-encrypt age secret files with updated recipients across packages
+    Rekey {
+        /// Recipient public key(s)
+        #[arg(short, long)]
+        recipient: Vec<String>,
+
+        /// Explicit path to age identity key file
+        #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
+        age_key_file: Option<PathBuf>,
+
+        /// Preview files that would be re-encrypted without modifying them
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Source directory containing dotfiles
+        #[arg(short, long)]
+        source: Option<PathBuf>,
+
+        /// Dotfile profile to select packages from configuration
+        #[arg(long, env = "ENSTOW_PROFILE", value_name = "NAME")]
+        profile: Option<String>,
+
+        /// Additional pattern to ignore (can be specified multiple times)
+        #[arg(short, long, value_name = "PATTERN")]
+        ignore: Vec<String>,
+
+        /// Dotfile packages to traverse for age secrets
+        #[arg(value_name = "PACKAGES")]
+        packages: Vec<String>,
+    },
     /// Show status of dotfiles and symlinks
     Status {
         #[command(flatten)]
