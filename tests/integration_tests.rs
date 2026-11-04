@@ -294,3 +294,50 @@ json = true
         std::env::set_var("ENSTOW_JSON", v);
     }
 }
+
+#[test]
+fn test_end_to_end_passphrase_secret_stow_and_sync() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let secret_src = source_dir.path().join("credentials.env.age");
+    let plaintext = b"DATABASE_PASSWORD=passphrase_protected_secret\n";
+
+    // Encrypt with passphrase directly to secret_src
+    let plain_temp = source_dir.path().join("plain.temp");
+    fs::write(&plain_temp, plaintext).unwrap();
+    std::env::set_var("ENSTOW_PASSPHRASE", "integration-test-pass");
+    enstow::crypto::encrypt_file_age(&plain_temp, &secret_src, &[], None, true).unwrap();
+    fs::remove_file(&plain_temp).unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        dry_run: false,
+        force: false,
+        prune: false,
+        age_key_file: None,
+        packages: Vec::new(),
+        ignore: Vec::new(),
+        ..Default::default()
+    };
+
+    let plan = plan_stow(&args).unwrap();
+    assert_eq!(plan.len(), 1);
+
+    // Execute plan with passphrase set in env
+    enstow::stow::execute_plan(&plan, false, None, false).unwrap();
+
+    let target_secret = target_dir.path().join("credentials.env");
+    assert!(target_secret.exists());
+    assert_eq!(fs::read(&target_secret).unwrap(), plaintext);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&target_secret).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    std::env::remove_var("ENSTOW_PASSPHRASE");
+}

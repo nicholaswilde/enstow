@@ -19,7 +19,7 @@ fn test_encrypt_file_with_explicit_recipient() {
     fs::write(&key_file, key.to_string().expose_secret()).unwrap();
 
     // Encrypt file using public recipient string
-    encrypt_file_age(&plaintext_file, &encrypted_file, &[pubkey_str], None).unwrap();
+    encrypt_file_age(&plaintext_file, &encrypted_file, &[pubkey_str], None, false).unwrap();
 
     assert!(encrypted_file.exists());
     // Decrypt and verify payload
@@ -40,7 +40,14 @@ fn test_encrypt_file_using_key_file() {
     fs::write(&key_file, key.to_string().expose_secret()).unwrap();
 
     // Encrypt file resolving recipient from identity key file
-    encrypt_file_age(&plaintext_file, &encrypted_file, &[], Some(&key_file)).unwrap();
+    encrypt_file_age(
+        &plaintext_file,
+        &encrypted_file,
+        &[],
+        Some(&key_file),
+        false,
+    )
+    .unwrap();
 
     assert!(encrypted_file.exists());
     let decrypted = decrypt_age(&encrypted_file, Some(&key_file)).unwrap();
@@ -128,6 +135,7 @@ fn test_encrypt_file_with_ssh_ed25519_recipient() {
         &encrypted_file,
         &[pubkey_str.trim().to_string()],
         None,
+        false,
     )
     .unwrap();
 
@@ -152,6 +160,7 @@ fn test_encrypt_file_with_ssh_ed25519_pub_file() {
         &encrypted_file,
         &[pub_key.to_string_lossy().to_string()],
         None,
+        false,
     )
     .unwrap();
 
@@ -171,7 +180,14 @@ fn test_encrypt_file_using_ssh_key_file() {
     fs::write(&plaintext_file, content).unwrap();
 
     // Encrypt resolving recipient from SSH private key file
-    encrypt_file_age(&plaintext_file, &encrypted_file, &[], Some(&priv_key)).unwrap();
+    encrypt_file_age(
+        &plaintext_file,
+        &encrypted_file,
+        &[],
+        Some(&priv_key),
+        false,
+    )
+    .unwrap();
 
     assert!(encrypted_file.exists());
     let decrypted = decrypt_age(&encrypted_file, Some(&priv_key)).unwrap();
@@ -194,10 +210,41 @@ fn test_encrypt_file_with_ssh_rsa_recipient() {
         &encrypted_file,
         &[pubkey_str.trim().to_string()],
         None,
+        false,
     )
     .unwrap();
 
     assert!(encrypted_file.exists());
     let decrypted = decrypt_age(&encrypted_file, Some(&priv_key)).unwrap();
     assert_eq!(decrypted, content);
+}
+
+#[test]
+fn test_encrypt_file_with_passphrase_roundtrip() {
+    let dir = tempdir().unwrap();
+    let plaintext_file = dir.path().join("passphrase_plain.env");
+    let encrypted_file = dir.path().join("passphrase_plain.env.age");
+    let content = b"PASSPHRASE_SECRET_TOKEN=xyz789\n";
+    fs::write(&plaintext_file, content).unwrap();
+
+    std::env::set_var("ENSTOW_PASSPHRASE", "my-secret-passphrase-123");
+
+    encrypt_file_age(&plaintext_file, &encrypted_file, &[], None, true).unwrap();
+
+    assert!(encrypted_file.exists());
+
+    let file = fs::File::open(&encrypted_file).unwrap();
+    let decryptor = age::Decryptor::new_buffered(age::armor::ArmoredReader::new(file)).unwrap();
+    assert!(decryptor.is_scrypt());
+
+    // Decrypt without any key files
+    let decrypted = decrypt_age(&encrypted_file, None).unwrap();
+    assert_eq!(decrypted, content);
+
+    // Decrypt with wrong passphrase should fail
+    std::env::set_var("ENSTOW_PASSPHRASE", "wrong-password");
+    let err = decrypt_age(&encrypted_file, None).unwrap_err();
+    assert!(matches!(err, enstow::error::EnstowError::Decryption { .. }));
+
+    std::env::remove_var("ENSTOW_PASSPHRASE");
 }

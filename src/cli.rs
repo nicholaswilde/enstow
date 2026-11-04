@@ -112,6 +112,7 @@ impl CommonArgs {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Apply dotfiles: symlink regular files and decrypt secret files
+    #[command(alias = "sync")]
     Apply(CommonArgs),
     /// Restow dotfiles: clean stale symlinks/secrets and re-apply
     Restow(CommonArgs),
@@ -127,10 +128,27 @@ pub enum Commands {
         output: Option<PathBuf>,
 
         /// Recipient public key(s)
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "passphrase")]
         recipient: Vec<String>,
 
         /// Explicit path to age identity key file to resolve recipient public key
+        #[arg(long, env = "ENSTOW_AGE_KEY_FILE", conflicts_with = "passphrase")]
+        age_key_file: Option<PathBuf>,
+
+        /// Encrypt with a passphrase instead of recipient public keys
+        #[arg(short = 'p', long)]
+        passphrase: bool,
+    },
+    /// Decrypt a secret dotfile
+    Decrypt {
+        /// Encrypted file to decrypt
+        file: PathBuf,
+
+        /// Output decrypted file path (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Explicit path to age identity key file
         #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
         age_key_file: Option<PathBuf>,
     },

@@ -1,9 +1,98 @@
 use crate::error::EnstowError;
+use age::secrecy::SecretString;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use tracing::info;
+use zeroize::Zeroize;
+
+static SESSION_PASSPHRASE: Mutex<Option<SecretString>> = Mutex::new(None);
+
+pub fn clear_session_passphrase() {
+    if let Ok(mut lock) = SESSION_PASSPHRASE.lock() {
+        *lock = None;
+    }
+}
+
+fn get_passphrase_for_encrypt() -> Result<SecretString, EnstowError> {
+    if let Ok(pass) = std::env::var("ENSTOW_PASSPHRASE") {
+        if !pass.is_empty() {
+            let mut pass = pass;
+            let secret = SecretString::from(pass.clone());
+            pass.zeroize();
+            return Ok(secret);
+        }
+    }
+
+    if let Ok(lock) = SESSION_PASSPHRASE.lock() {
+        if let Some(ref cached) = *lock {
+            return Ok(cached.clone());
+        }
+    }
+
+    let p1 = rpassword::prompt_password("Enter passphrase: ").map_err(|e| {
+        EnstowError::Config(format!(
+            "Passphrase required: set ENSTOW_PASSPHRASE or run in an interactive terminal ({e})"
+        ))
+    })?;
+    let p2 = rpassword::prompt_password("Confirm passphrase: ").map_err(|e| {
+        EnstowError::Config(format!(
+            "Passphrase required: set ENSTOW_PASSPHRASE or run in an interactive terminal ({e})"
+        ))
+    })?;
+
+    if p1 != p2 {
+        let mut p1 = p1;
+        let mut p2 = p2;
+        p1.zeroize();
+        p2.zeroize();
+        return Err(EnstowError::Config("Passphrases do not match".into()));
+    }
+
+    let mut p1 = p1;
+    let mut p2 = p2;
+    p2.zeroize();
+    let secret = SecretString::from(p1.clone());
+    p1.zeroize();
+
+    if let Ok(mut lock) = SESSION_PASSPHRASE.lock() {
+        *lock = Some(secret.clone());
+    }
+
+    Ok(secret)
+}
+
+fn get_passphrase_for_decrypt(path: &Path) -> Result<SecretString, EnstowError> {
+    if let Ok(pass) = std::env::var("ENSTOW_PASSPHRASE") {
+        if !pass.is_empty() {
+            let mut pass = pass;
+            let secret = SecretString::from(pass.clone());
+            pass.zeroize();
+            return Ok(secret);
+        }
+    }
+
+    if let Ok(lock) = SESSION_PASSPHRASE.lock() {
+        if let Some(ref cached) = *lock {
+            return Ok(cached.clone());
+        }
+    }
+
+    let prompt = format!("Enter passphrase for {}: ", path.display());
+    let pass = rpassword::prompt_password(&prompt).map_err(|e| EnstowError::Decryption {
+        path: path.to_path_buf(),
+        message: format!(
+            "Passphrase required: set ENSTOW_PASSPHRASE or run in an interactive terminal ({e})"
+        ),
+    })?;
+
+    let mut pass = pass;
+    let secret = SecretString::from(pass.clone());
+    pass.zeroize();
+    Ok(secret)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretType {
@@ -47,6 +136,46 @@ pub fn decrypt_to_memory(
 }
 
 pub fn decrypt_age(path: &Path, age_key_file: Option<&Path>) -> Result<Vec<u8>, EnstowError> {
+    let file = File::open(path).map_err(|e| EnstowError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let decryptor =
+        age::Decryptor::new_buffered(age::armor::ArmoredReader::new(file)).map_err(|e| {
+            EnstowError::Decryption {
+                path: path.to_path_buf(),
+                message: format!("Failed to initialize age decryptor: {e}"),
+            }
+        })?;
+
+    if decryptor.is_scrypt() {
+        let passphrase = get_passphrase_for_decrypt(path)?;
+        let identity = age::scrypt::Identity::new(passphrase.clone());
+        match decryptor.decrypt(std::iter::once(&identity as &dyn age::Identity)) {
+            Ok(mut reader) => {
+                let mut plaintext = Vec::new();
+                reader
+                    .read_to_end(&mut plaintext)
+                    .map_err(|e| EnstowError::Io {
+                        path: path.to_path_buf(),
+                        source: e,
+                    })?;
+                if let Ok(mut lock) = SESSION_PASSPHRASE.lock() {
+                    *lock = Some(passphrase);
+                }
+                return Ok(plaintext);
+            }
+            Err(e) => {
+                clear_session_passphrase();
+                return Err(EnstowError::Decryption {
+                    path: path.to_path_buf(),
+                    message: format!("Decryption failed: {e}"),
+                });
+            }
+        }
+    }
+
     let key_paths = get_age_key_paths(age_key_file);
     if key_paths.is_empty() {
         return Err(EnstowError::Decryption {
@@ -86,16 +215,6 @@ pub fn decrypt_age(path: &Path, age_key_file: Option<&Path>) -> Result<Vec<u8>, 
             message: format!("Could not load any age identities from {:?}", key_paths),
         });
     }
-
-    let file = File::open(path).map_err(|e| EnstowError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-
-    let decryptor = age::Decryptor::new(file).map_err(|e| EnstowError::Decryption {
-        path: path.to_path_buf(),
-        message: format!("Failed to initialize age decryptor: {e}"),
-    })?;
 
     let id_refs: Vec<&dyn age::Identity> = identities
         .iter()
@@ -154,9 +273,16 @@ impl age::Callbacks for SshCallbacks {
     fn request_public_string(&self, _description: &str) -> Option<String> {
         None
     }
-    fn request_passphrase(&self, _description: &str) -> Option<age::secrecy::SecretString> {
-        std::env::var("ENSTOW_SSH_PASSPHRASE")
+    fn request_passphrase(&self, description: &str) -> Option<age::secrecy::SecretString> {
+        if let Ok(pass) = std::env::var("ENSTOW_SSH_PASSPHRASE")
             .or_else(|_| std::env::var("SSH_PASSPHRASE"))
+            .or_else(|_| std::env::var("ENSTOW_PASSPHRASE"))
+        {
+            if !pass.is_empty() {
+                return Some(age::secrecy::SecretString::from(pass));
+            }
+        }
+        rpassword::prompt_password(format!("Enter passphrase for SSH key ({description}): "))
             .ok()
             .map(age::secrecy::SecretString::from)
     }
@@ -271,13 +397,62 @@ fn load_recipients_from_file(
     )))
 }
 
+pub fn encrypt_file_age_with_passphrase(
+    input_path: &Path,
+    output_path: &Path,
+    passphrase: SecretString,
+) -> Result<(), EnstowError> {
+    use std::io::Write;
+
+    let plaintext = std::fs::read(input_path).map_err(|e| EnstowError::Io {
+        path: input_path.to_path_buf(),
+        source: e,
+    })?;
+
+    let encryptor = age::Encryptor::with_user_passphrase(passphrase);
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })?;
+    }
+
+    let mut out_file = std::fs::File::create(output_path).map_err(|e| EnstowError::Io {
+        path: output_path.to_path_buf(),
+        source: e,
+    })?;
+
+    let mut writer = encryptor
+        .wrap_output(&mut out_file)
+        .map_err(|e| EnstowError::Config(format!("Failed to wrap encryptor output: {e}")))?;
+
+    writer.write_all(&plaintext).map_err(|e| EnstowError::Io {
+        path: output_path.to_path_buf(),
+        source: e,
+    })?;
+
+    writer.finish().map_err(|e| EnstowError::Io {
+        path: output_path.to_path_buf(),
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 pub fn encrypt_file_age(
     input_path: &Path,
     output_path: &Path,
     recipients: &[String],
     age_key_file: Option<&Path>,
+    passphrase: bool,
 ) -> Result<(), EnstowError> {
     use std::io::Write;
+
+    if passphrase {
+        let secret = get_passphrase_for_encrypt()?;
+        return encrypt_file_age_with_passphrase(input_path, output_path, secret);
+    }
 
     let mut recipient_list: Vec<Box<dyn age::Recipient + Send>> = Vec::new();
 
@@ -463,6 +638,16 @@ pub fn edit_file_age(
         )));
     }
 
+    let is_scrypt = {
+        if let Ok(f) = File::open(file) {
+            age::Decryptor::new_buffered(age::armor::ArmoredReader::new(f))
+                .map(|d| d.is_scrypt())
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
     let plaintext = decrypt_age(file, age_key_file)?;
 
     let temp_dir = tempfile::Builder::new()
@@ -573,7 +758,7 @@ pub fn edit_file_age(
     }
 
     let temp_out = file.with_extension("age.tmp");
-    encrypt_file_age(&temp_path, &temp_out, recipients, age_key_file)?;
+    encrypt_file_age(&temp_path, &temp_out, recipients, age_key_file, is_scrypt)?;
     if let Ok(meta) = std::fs::metadata(file) {
         let _ = std::fs::set_permissions(&temp_out, meta.permissions());
     }

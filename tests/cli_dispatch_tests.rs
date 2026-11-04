@@ -249,6 +249,77 @@ fn test_cli_subcommands_end_to_end() {
     assert!(output.status.success());
     assert!(src.path().join("auto.txt.age").exists());
 
+    // Subcommand: Encrypt with --passphrase
+    let pass_plain = src.path().join("pass_plain.txt");
+    fs::write(&pass_plain, "passphrase_secret_payload\n").unwrap();
+    let pass_encrypted_out = src.path().join("pass_plain.txt.age");
+
+    let output = Command::new(bin)
+        .args([
+            "encrypt",
+            pass_plain.to_str().unwrap(),
+            "-o",
+            pass_encrypted_out.to_str().unwrap(),
+            "--passphrase",
+        ])
+        .env("ENSTOW_PASSPHRASE", "test-pass-cli-456")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "encrypt --passphrase failed: {:?}",
+        output
+    );
+    assert!(pass_encrypted_out.exists());
+
+    // Subcommand: Decrypt with output file
+    let pass_decrypted_out = src.path().join("pass_decrypted.txt");
+    let output = Command::new(bin)
+        .args([
+            "decrypt",
+            pass_encrypted_out.to_str().unwrap(),
+            "-o",
+            pass_decrypted_out.to_str().unwrap(),
+        ])
+        .env("ENSTOW_PASSPHRASE", "test-pass-cli-456")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "decrypt failed: {:?}", output);
+    assert_eq!(
+        fs::read_to_string(&pass_decrypted_out).unwrap(),
+        "passphrase_secret_payload\n"
+    );
+
+    // Subcommand: Decrypt to stdout
+    let output = Command::new(bin)
+        .args(["decrypt", pass_encrypted_out.to_str().unwrap()])
+        .env("ENSTOW_PASSPHRASE", "test-pass-cli-456")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "decrypt to stdout failed: {:?}",
+        output
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "passphrase_secret_payload\n"
+    );
+
+    // Subcommand: Sync alias for Apply
+    let output = Command::new(bin)
+        .args([
+            "sync",
+            "-n",
+            "-s",
+            src.path().to_str().unwrap(),
+            "-t",
+            tgt.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "sync command failed: {:?}", output);
+
     // Subcommand: Edit (modifying)
     let editor_bin = compile_mock_editor(src.path(), Some("EDITED_CONTENT\n"), 0);
     let output = Command::new(bin)
@@ -302,4 +373,39 @@ fn test_cli_subcommands_end_to_end() {
         .output()
         .unwrap();
     assert!(output.status.success());
+}
+
+#[test]
+fn test_cli_parsing_passphrase_and_decrypt() {
+    use clap::Parser;
+    use enstow::cli::{Cli, Commands};
+
+    // Encrypt with passphrase
+    let cli = Cli::try_parse_from(["enstow", "encrypt", "-p", "file.txt"]).unwrap();
+    match cli.command {
+        Some(Commands::Encrypt { passphrase, .. }) => assert!(passphrase),
+        other => panic!("Expected Encrypt, got {:?}", other),
+    }
+
+    // Encrypt with passphrase and recipient should conflict
+    let err =
+        Cli::try_parse_from(["enstow", "encrypt", "-p", "-r", "age1xxx", "file.txt"]).unwrap_err();
+    assert!(err.to_string().contains("cannot be used with"));
+
+    // Decrypt command
+    let cli = Cli::try_parse_from(["enstow", "decrypt", "file.txt.age", "-o", "file.txt"]).unwrap();
+    match cli.command {
+        Some(Commands::Decrypt { file, output, .. }) => {
+            assert_eq!(file, std::path::PathBuf::from("file.txt.age"));
+            assert_eq!(output, Some(std::path::PathBuf::from("file.txt")));
+        }
+        other => panic!("Expected Decrypt, got {:?}", other),
+    }
+
+    // Sync alias
+    let cli = Cli::try_parse_from(["enstow", "sync"]).unwrap();
+    match cli.command {
+        Some(Commands::Apply(_)) => {}
+        other => panic!("Expected Apply via sync alias, got {:?}", other),
+    }
 }

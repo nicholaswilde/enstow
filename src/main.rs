@@ -122,6 +122,7 @@ fn main() -> anyhow::Result<()> {
             output,
             recipient,
             age_key_file,
+            passphrase,
         }) => {
             let resolved_recipients =
                 enstow::config::resolve_recipients(&recipient, config.as_ref());
@@ -137,8 +138,35 @@ fn main() -> anyhow::Result<()> {
                 &out,
                 &resolved_recipients,
                 resolved_key_file.as_deref(),
+                passphrase,
             )?;
             println!("Encrypted {} -> {}", file.display(), out.display());
+        }
+        Some(Commands::Decrypt {
+            file,
+            output,
+            age_key_file,
+        }) => {
+            let resolved_key_file =
+                enstow::config::resolve_age_key_file(age_key_file.as_deref(), config.as_ref());
+            let secret_type = enstow::crypto::detect_secret_type(&file).ok_or_else(|| {
+                enstow::error::EnstowError::Config(format!(
+                    "Unrecognized secret format: {}",
+                    file.display()
+                ))
+            })?;
+            let plaintext = enstow::crypto::decrypt_to_memory(
+                &file,
+                secret_type,
+                resolved_key_file.as_deref(),
+            )?;
+            if let Some(out_path) = output {
+                enstow::crypto::write_secure_file(&out_path, &plaintext, true)?;
+                println!("Decrypted {} -> {}", file.display(), out_path.display());
+            } else {
+                use std::io::Write;
+                std::io::stdout().write_all(&plaintext)?;
+            }
         }
         Some(Commands::Edit {
             file,

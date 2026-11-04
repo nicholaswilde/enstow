@@ -249,6 +249,7 @@ fn test_encrypt_file_age_env_and_error_paths() {
         &output_file,
         std::slice::from_ref(&pubkey_str),
         None,
+        false,
     )
     .unwrap_err();
     assert!(matches!(err, EnstowError::Io { .. }));
@@ -266,19 +267,19 @@ fn test_encrypt_file_age_env_and_error_paths() {
     std::env::remove_var("SOPS_AGE_KEY_FILE");
     std::env::set_var("HOME", dir.path());
 
-    let err = encrypt_file_age(&input_file, &output_file, &[], None).unwrap_err();
+    let err = encrypt_file_age(&input_file, &output_file, &[], None, false).unwrap_err();
     assert!(matches!(err, EnstowError::Config(_)));
 
     // 3. Encrypt via ENSTOW_RECIPIENTS env var
     std::env::set_var("ENSTOW_RECIPIENTS", format!("{},", pubkey_str));
-    encrypt_file_age(&input_file, &output_file, &[], None).unwrap();
+    encrypt_file_age(&input_file, &output_file, &[], None, false).unwrap();
     assert!(output_file.exists());
     fs::remove_file(&output_file).unwrap();
 
     // 4. Encrypt via SOPS_AGE_RECIPIENTS env var
     std::env::remove_var("ENSTOW_RECIPIENTS");
     std::env::set_var("SOPS_AGE_RECIPIENTS", format!("\n{}\n", pubkey_str));
-    encrypt_file_age(&input_file, &output_file, &[], None).unwrap();
+    encrypt_file_age(&input_file, &output_file, &[], None, false).unwrap();
     assert!(output_file.exists());
 
     std::env::remove_var("SOPS_AGE_RECIPIENTS");
