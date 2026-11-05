@@ -101,6 +101,78 @@ pub fn parse_mode_int(n: u32) -> Result<u32> {
 pub struct PackageConfig {
     #[serde(default)]
     pub permissions: BTreeMap<String, PermissionMode>,
+    #[serde(default)]
+    pub hooks: Option<HooksConfig>,
+}
+
+/// Lifecycle hooks configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HooksConfig {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_hook_commands",
+        alias = "pre_stow",
+        alias = "pre_sync"
+    )]
+    pub pre_apply: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_hook_commands",
+        alias = "post_stow",
+        alias = "post_sync"
+    )]
+    pub post_apply: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_hook_commands",
+        alias = "pre_delete",
+        alias = "pre_remove"
+    )]
+    pub pre_unstow: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_hook_commands",
+        alias = "post_delete",
+        alias = "post_remove"
+    )]
+    pub post_unstow: Vec<String>,
+}
+
+pub fn deserialize_hook_commands<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringOrVec;
+
+    impl<'de> serde::de::Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string command or a list of string commands")
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value.to_string()])
+        }
+
+        fn visit_seq<S>(self, mut visitor: S) -> std::result::Result<Self::Value, S::Error>
+        where
+            S: serde::de::SeqAccess<'de>,
+        {
+            let mut vec = Vec::new();
+            while let Some(elem) = visitor.next_element::<String>()? {
+                vec.push(elem);
+            }
+            Ok(vec)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
 }
 
 /// Configuration for a package profile.
@@ -133,8 +205,11 @@ pub struct ConfigFile {
     pub default_profile: Option<String>,
     pub profiles: Option<BTreeMap<String, ProfileConfig>>,
     pub permissions: Option<BTreeMap<String, PermissionMode>>,
+    pub hooks: Option<HooksConfig>,
     pub package: Option<BTreeMap<String, PackageConfig>>,
     pub package_permissions: Option<BTreeMap<String, BTreeMap<String, PermissionMode>>>,
+    pub package_hooks: Option<BTreeMap<String, HooksConfig>>,
+    pub no_hooks: Option<bool>,
 }
 
 impl ConfigFile {
@@ -320,6 +395,35 @@ impl PermissionsConfig {
     }
 }
 
+/// Compiled lifecycle hooks across global and package scopes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResolvedHooks {
+    pub global: HooksConfig,
+    pub packages: BTreeMap<String, HooksConfig>,
+}
+
+pub fn resolve_hooks(config: Option<&ConfigFile>) -> ResolvedHooks {
+    let mut resolved = ResolvedHooks::default();
+    if let Some(cfg) = config {
+        if let Some(hooks) = &cfg.hooks {
+            resolved.global = hooks.clone();
+        }
+        if let Some(pkg_map) = &cfg.package {
+            for (pkg_name, pkg_cfg) in pkg_map {
+                if let Some(hooks) = &pkg_cfg.hooks {
+                    resolved.packages.insert(pkg_name.clone(), hooks.clone());
+                }
+            }
+        }
+        if let Some(pkg_hooks) = &cfg.package_hooks {
+            for (pkg_name, hooks) in pkg_hooks {
+                resolved.packages.insert(pkg_name.clone(), hooks.clone());
+            }
+        }
+    }
+    resolved
+}
+
 /// Fully resolved common arguments after evaluating the precedence chain:
 /// 1. Command Line Arguments
 /// 2. Environment Variables
@@ -340,6 +444,8 @@ pub struct ResolvedCommonArgs {
     pub backup_dir: PathBuf,
     pub permissions: PermissionsConfig,
     pub adopt: bool,
+    pub no_hooks: bool,
+    pub hooks: ResolvedHooks,
 }
 
 impl ResolvedCommonArgs {
@@ -357,6 +463,7 @@ impl ResolvedCommonArgs {
             backup: self.backup,
             backup_dir: Some(self.backup_dir.clone()),
             adopt: self.adopt,
+            no_hooks: self.no_hooks,
         }
     }
 }
@@ -612,6 +719,18 @@ pub fn resolve_common_args(
         config.and_then(|c| c.adopt).unwrap_or_default()
     };
 
+    // 13. No hooks precedence: CLI (--no-hooks) > ENSTOW_NO_HOOKS > Config > Default (false)
+    let no_hooks = if cli_args.no_hooks {
+        true
+    } else if let Some(env_no_hooks) = parse_bool_env("ENSTOW_NO_HOOKS") {
+        env_no_hooks
+    } else {
+        config.and_then(|c| c.no_hooks).unwrap_or_default()
+    };
+
+    // 14. Lifecycle hooks resolution
+    let hooks = resolve_hooks(config);
+
     Ok(ResolvedCommonArgs {
         source,
         target,
@@ -626,6 +745,8 @@ pub fn resolve_common_args(
         backup_dir,
         permissions,
         adopt,
+        no_hooks,
+        hooks,
     })
 }
 

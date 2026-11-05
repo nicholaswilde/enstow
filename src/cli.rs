@@ -95,6 +95,10 @@ pub struct CommonArgs {
     /// Additional pattern to ignore (can be specified multiple times)
     #[arg(short, long, value_name = "PATTERN")]
     pub ignore: Vec<String>,
+
+    /// Skip execution of pre- and post-lifecycle hooks
+    #[arg(long = "no-hooks", alias = "skip-hooks", env = "ENSTOW_NO_HOOKS")]
+    pub no_hooks: bool,
 }
 
 impl CommonArgs {

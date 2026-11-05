@@ -25,6 +25,7 @@ A high-performance, single-binary CLI secret-aware dotfile manager combining GNU
 - **Collision & Backup Handling:** Detects conflicts with existing target files, with options to preview (`--dry-run`), overwrite (`--force`), or relocate conflicting files to a backup directory (`--backup`, `--backup-dir`).
 - **Stale Link Pruning:** Automatically detects and removes orphaned symlinks from previous package versions during apply (`--prune`).
 - **Status Reporting:** Inspect synced, missing, conflicting, modified (drifted), and unverified dotfiles with optional JSON output (`--json`).
+- **Lifecycle Hooks:** Execute pre- and post-deployment hooks (`pre_apply`, `post_apply`, `pre_unstow`, `post_unstow`) globally or per-package with contextual environment variables.
 - **Secret Encryption & Editing:** Encrypt dotfiles to `.age` files and interactively edit them in `$ENSTOW_EDITOR` (or `$VISUAL` / `$EDITOR`) with automatic in-memory re-encryption.
 - **Ignore Rules:** Filters files using `.enstowignore`, `.stow-local-ignore`, `--ignore` / `-i` CLI flags, or `ENSTOW_IGNORE` environment variable.
 - **Dynamic Shell Completions:** Dynamic shell completion across Bash, Zsh, Fish, PowerShell, and Elvish via `clap_complete`.
@@ -335,6 +336,36 @@ export ENSTOW_IGNORE="*.bak,*.tmp:*.swp"
 enstow apply
 ```
 
+### Lifecycle Hooks
+
+Automate follow-up actions like rebuilding tool caches, reloading user units, or notifying daemons during apply or unstow:
+
+```toml
+# In ~/.config/enstow/config.toml
+[hooks]
+pre_apply = "echo 'Starting deployment'"
+post_apply = "echo 'Deployment complete'"
+
+[package.bat.hooks]
+post_apply = "bat cache --build"
+```
+
+Contextual environment variables are passed to each hook:
+
+- `ENSTOW_PACKAGE`: Name of the package being deployed (empty for global hooks)
+- `ENSTOW_SOURCE`: Path to dotfile package source directory
+- `ENSTOW_TARGET`: Target deployment root directory
+- `ENSTOW_HOOK_TYPE`: Type of hook (`pre_apply`, `post_apply`, `pre_unstow`, `post_unstow`)
+- `ENSTOW_DRY_RUN`: `true` or `false`
+- `ENSTOW_FORCE`: `true` or `false`
+
+Hooks can be bypassed on demand:
+
+```bash
+# Bypass lifecycle hook execution
+enstow apply --no-hooks
+```
+
 ---
 
 ## :books: Shell Completions
@@ -544,6 +575,7 @@ log_level: info
 | `ENSTOW_BACKUP_DIR` | `backup_dir` | `--backup-dir` | Path to directory where conflicting files are relocated | `$TARGET/.enstow-backup` |
 | `ENSTOW_PRUNE` | `prune` | `--prune` | Prune stale managed symlinks during apply (`true`/`false`) | `false` |
 | `ENSTOW_ADOPT` | `adopt` | `--adopt` | Adopt conflicting destination files into source package during apply (`true`/`false`) | `false` |
+| `ENSTOW_NO_HOOKS` | `no_hooks` | `--no-hooks` | Skip execution of pre- and post-lifecycle hooks (`true`/`false`) | `false` |
 | `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | `age_key_file` | `--age-key-file` | Path to age identity key file for encryption/decryption | None |
 | `ENSTOW_SSH_KEY_FILE` | N/A | `--age-key-file` | Path to SSH private key identity file for decryption / recipient derivation | `~/.ssh/id_ed25519`, `~/.ssh/id_rsa` |
 | `ENSTOW_SSH_PASSPHRASE` / `SSH_PASSPHRASE` | N/A | N/A | Passphrase for encrypted SSH private key identities | None (prompts interactively) |

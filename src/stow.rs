@@ -1185,15 +1185,7 @@ mod tests {
             source: Some(dir.path().to_path_buf()),
             target: Some(target_dir.path().to_path_buf()),
             dry_run: true,
-            force: false,
-            prune: false,
-            age_key_file: None,
-            profile: None,
-            packages: Vec::new(),
-            ignore: Vec::new(),
-            backup: false,
-            backup_dir: None,
-            adopt: false,
+            ..Default::default()
         };
 
         let actions = plan_stow(&args).unwrap();

@@ -19,4 +19,11 @@ pub enum EnstowError {
 
     #[error("Invalid path or configuration: {0}")]
     Config(String),
+
+    #[error("Hook execution failed ({hook_type}): command '{command}' exited with {status}")]
+    Hook {
+        hook_type: String,
+        command: String,
+        status: String,
+    },
 }

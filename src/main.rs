@@ -79,6 +79,7 @@ fn main() -> anyhow::Result<()> {
                 stow::execute_unstow_plan(&stale_actions, &common.target_path(), common.dry_run)?;
             }
             let actions = stow::plan_stow(&common)?;
+            enstow::hook::run_pre_apply_hooks(&resolved)?;
             stow::execute_plan_with_backup_and_permissions(
                 &actions,
                 common.dry_run,
@@ -90,12 +91,17 @@ fn main() -> anyhow::Result<()> {
                 Some(&resolved.permissions),
                 common.adopt,
             )?;
+            enstow::hook::run_post_apply_hooks(&resolved)?;
         }
         Some(Commands::Restow(args)) => {
             let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
             let common = resolved.to_common_args();
+            enstow::hook::run_pre_unstow_hooks(&resolved)?;
             let unstow_actions = stow::plan_unstow(&common)?;
             stow::execute_unstow_plan(&unstow_actions, &common.target_path(), common.dry_run)?;
+            enstow::hook::run_post_unstow_hooks(&resolved)?;
+
+            enstow::hook::run_pre_apply_hooks(&resolved)?;
             let apply_actions = stow::plan_stow(&common)?;
             stow::execute_plan_with_backup_and_permissions(
                 &apply_actions,
@@ -108,12 +114,15 @@ fn main() -> anyhow::Result<()> {
                 Some(&resolved.permissions),
                 common.adopt,
             )?;
+            enstow::hook::run_post_apply_hooks(&resolved)?;
         }
         Some(Commands::Unstow(args)) => {
-            let common =
-                enstow::config::resolve_common_args(&args, config.as_ref())?.to_common_args();
+            let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
+            let common = resolved.to_common_args();
+            enstow::hook::run_pre_unstow_hooks(&resolved)?;
             let actions = stow::plan_unstow(&common)?;
             stow::execute_unstow_plan(&actions, &common.target_path(), common.dry_run)?;
+            enstow::hook::run_post_unstow_hooks(&resolved)?;
         }
         Some(Commands::Status { common, json }) => {
             let resolved_common =
@@ -312,6 +321,7 @@ fn main() -> anyhow::Result<()> {
             let resolved = enstow::config::resolve_common_args(&cli.common, config.as_ref())?;
             let common = resolved.to_common_args();
             let actions = stow::plan_stow(&common)?;
+            enstow::hook::run_pre_apply_hooks(&resolved)?;
             stow::execute_plan_with_backup_and_permissions(
                 &actions,
                 common.dry_run,
@@ -323,6 +333,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&resolved.permissions),
                 common.adopt,
             )?;
+            enstow::hook::run_post_apply_hooks(&resolved)?;
         }
     }
 
