@@ -107,20 +107,34 @@ fn test_hooks_pre_and_post_apply_execution_order_and_env() {
     fs::create_dir_all(&app_src).unwrap();
     fs::write(app_src.join("config.ini"), "setting=true\n").unwrap();
 
-    let pre_cmd = format!(
-        "echo pre:$ENSTOW_PACKAGE:$ENSTOW_HOOK_TYPE >> {}",
-        log_file.display()
+    #[cfg(not(windows))]
+    let (pre_cmd, post_cmd) = (
+        format!(
+            "echo pre:$ENSTOW_PACKAGE:$ENSTOW_HOOK_TYPE >> {}",
+            log_file.display()
+        ),
+        format!(
+            "echo post:$ENSTOW_PACKAGE:$ENSTOW_HOOK_TYPE >> {}",
+            log_file.display()
+        ),
     );
-    let post_cmd = format!(
-        "echo post:$ENSTOW_PACKAGE:$ENSTOW_HOOK_TYPE >> {}",
-        log_file.display()
+    #[cfg(windows)]
+    let (pre_cmd, post_cmd) = (
+        format!(
+            "echo pre:%ENSTOW_PACKAGE%:%ENSTOW_HOOK_TYPE%>>{}",
+            log_file.display()
+        ),
+        format!(
+            "echo post:%ENSTOW_PACKAGE%:%ENSTOW_HOOK_TYPE%>>{}",
+            log_file.display()
+        ),
     );
 
     let toml_str = format!(
         r#"
 [package.app.hooks]
-pre_apply = "{}"
-post_apply = "{}"
+pre_apply = '{}'
+post_apply = '{}'
 "#,
         pre_cmd, post_cmd
     );
@@ -164,7 +178,7 @@ post_apply = "{}"
     run_post_apply_hooks(&resolved).unwrap();
 
     let log_contents = fs::read_to_string(&log_file).unwrap();
-    let lines: Vec<&str> = log_contents.lines().collect();
+    let lines: Vec<&str> = log_contents.lines().map(str::trim).collect();
     assert_eq!(lines, vec!["pre:app:pre_apply", "post:app:post_apply"]);
 }
 
@@ -221,7 +235,7 @@ fn test_dry_run_previews_hooks_without_executing() {
     let toml_str = format!(
         r#"
 [package.app.hooks]
-pre_apply = "touch {}"
+pre_apply = 'echo marker >> {}'
 "#,
         marker.display()
     );
@@ -255,7 +269,7 @@ fn test_no_hooks_bypasses_execution() {
     let toml_str = format!(
         r#"
 [package.app.hooks]
-pre_apply = "touch {}"
+pre_apply = 'echo marker >> {}'
 "#,
         marker.display()
     );
@@ -296,15 +310,23 @@ fn test_hooks_cli_end_to_end() {
     fs::create_dir_all(&app_src).unwrap();
     fs::write(app_src.join("test.txt"), "content").unwrap();
 
-    let pre_cmd = format!("echo pre >> {}", log_file.display());
-    let post_cmd = format!("echo post >> {}", log_file.display());
+    #[cfg(not(windows))]
+    let (pre_cmd, post_cmd) = (
+        format!("echo pre >> {}", log_file.display()),
+        format!("echo post >> {}", log_file.display()),
+    );
+    #[cfg(windows)]
+    let (pre_cmd, post_cmd) = (
+        format!("echo pre>>{}", log_file.display()),
+        format!("echo post>>{}", log_file.display()),
+    );
 
     let config_path = config_dir.path().join("config.toml");
     let config_content = format!(
         r#"
 [package.mypkg.hooks]
-pre_apply = "{}"
-post_apply = "{}"
+pre_apply = '{}'
+post_apply = '{}'
 "#,
         pre_cmd, post_cmd
     );
@@ -344,7 +366,10 @@ post_apply = "{}"
 
     assert!(apply_output.status.success());
     let log = fs::read_to_string(&log_file).unwrap();
-    assert_eq!(log.trim().lines().collect::<Vec<_>>(), vec!["pre", "post"]);
+    assert_eq!(
+        log.trim().lines().map(str::trim).collect::<Vec<_>>(),
+        vec!["pre", "post"]
+    );
 
     // 3. Failure without force
     let fail_config_path = config_dir.path().join("fail_config.toml");
@@ -369,7 +394,10 @@ pre_apply = "exit 1"
         .output()
         .unwrap();
 
-    assert!(!fail_output.status.success(), "Expected command failure exit code");
+    assert!(
+        !fail_output.status.success(),
+        "Expected command failure exit code"
+    );
 
     // 4. Failure with force
     let force_output = std::process::Command::new(bin)
@@ -385,7 +413,10 @@ pre_apply = "exit 1"
         .output()
         .unwrap();
 
-    assert!(force_output.status.success(), "Expected success with --force");
+    assert!(
+        force_output.status.success(),
+        "Expected success with --force"
+    );
 
     // 5. Bypass with --no-hooks
     let marker_no_hooks = tgt.path().join("never_created.txt");
@@ -395,7 +426,7 @@ pre_apply = "exit 1"
         format!(
             r#"
 [package.mypkg.hooks]
-pre_apply = "touch {}"
+pre_apply = 'echo marker >> {}'
 "#,
             marker_no_hooks.display()
         ),
