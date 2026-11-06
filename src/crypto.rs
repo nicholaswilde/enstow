@@ -890,3 +890,172 @@ fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
     }
     paths
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use age::secrecy::ExposeSecret;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_clear_session_passphrase() {
+        if let Ok(mut lock) = SESSION_PASSPHRASE.lock() {
+            *lock = Some(SecretString::from("secret".to_string()));
+        }
+        clear_session_passphrase();
+        if let Ok(lock) = SESSION_PASSPHRASE.lock() {
+            assert!(lock.is_none());
+        }
+    }
+
+    #[test]
+    fn test_detect_secret_type() {
+        assert_eq!(
+            detect_secret_type(Path::new("secret.age")),
+            Some(SecretType::Age)
+        );
+        assert_eq!(
+            detect_secret_type(Path::new("secret.sops.yaml")),
+            Some(SecretType::Sops)
+        );
+        assert_eq!(
+            detect_secret_type(Path::new(".sops.yaml")),
+            Some(SecretType::Sops)
+        );
+        assert_eq!(
+            detect_secret_type(Path::new("config.sops.json")),
+            Some(SecretType::Sops)
+        );
+        assert_eq!(detect_secret_type(Path::new("plain.txt")), None);
+        assert_eq!(detect_secret_type(Path::new(".bashrc")), None);
+    }
+
+    #[test]
+    fn test_target_plaintext_name() {
+        assert_eq!(
+            target_plaintext_name(Path::new("secret.age")).unwrap(),
+            "secret"
+        );
+        assert_eq!(
+            target_plaintext_name(Path::new("secret.sops.yaml")).unwrap(),
+            "secret.yaml"
+        );
+        assert_eq!(
+            target_plaintext_name(Path::new("secret.sops.json")).unwrap(),
+            "secret.json"
+        );
+        assert_eq!(
+            target_plaintext_name(Path::new("file.sops.txt")).unwrap(),
+            "file.txt"
+        );
+    }
+
+    #[test]
+    fn test_get_age_key_paths() {
+        let explicit = Path::new("/custom/age/key.txt");
+        let paths = get_age_key_paths(Some(explicit));
+        assert_eq!(paths[0], PathBuf::from("/custom/age/key.txt"));
+
+        let default_paths = get_age_key_paths(None);
+        assert!(!default_paths.is_empty());
+    }
+
+    #[test]
+    fn test_load_recipients_from_str() {
+        assert!(load_recipients_from_str("").unwrap().is_empty());
+        assert!(load_recipients_from_str("   ").unwrap().is_empty());
+        assert!(load_recipients_from_str("not_a_valid_recipient_string").is_err());
+    }
+
+    #[test]
+    fn test_write_secure_file() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("secure_file.txt");
+
+        // Initial write succeeds
+        assert!(write_secure_file(&target, b"secret data", false).is_ok());
+        assert_eq!(std::fs::read(&target).unwrap(), b"secret data");
+
+        // Collision without force fails
+        assert!(matches!(
+            write_secure_file(&target, b"new data", false),
+            Err(EnstowError::Collision { .. })
+        ));
+
+        // Overwrite with force succeeds
+        assert!(write_secure_file(&target, b"new data", true).is_ok());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new data");
+
+        // Write with custom mode
+        let target_mode = dir.path().join("mode_file.txt");
+        assert!(write_secure_file_with_mode(&target_mode, b"data", false, 0o644).is_ok());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(&target_mode).unwrap().permissions();
+            assert_eq!(perms.mode() & 0o777, 0o644);
+        }
+    }
+
+    #[test]
+    fn test_age_roundtrip_with_generated_identity() {
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("keys.txt");
+        let encrypted_path = dir.path().join("secret.txt.age");
+
+        // Generate an x25519 identity
+        let identity = age::x25519::Identity::generate();
+        let pubkey = identity.to_public();
+        let identity_secret = identity.to_string();
+
+        std::fs::write(&key_path, identity_secret.expose_secret()).unwrap();
+
+        let recipient_str = pubkey.to_string();
+        let recipient_list =
+            resolve_age_recipients(&[recipient_str.clone()], Some(&key_path)).unwrap();
+        assert_eq!(recipient_list.len(), 1);
+
+        let plaintext = b"Hello, world of enstow tests!";
+        encrypt_bytes_age_with_recipients(plaintext, &encrypted_path, &recipient_list).unwrap();
+
+        assert!(encrypted_path.is_file());
+
+        let decrypted = decrypt_age(&encrypted_path, Some(&key_path)).unwrap();
+        assert_eq!(decrypted, plaintext);
+
+        // Rekey with new recipient
+        let new_identity = age::x25519::Identity::generate();
+        let new_pubkey = new_identity.to_public();
+        let new_key_path = dir.path().join("new_keys.txt");
+        std::fs::write(&new_key_path, new_identity.to_string().expose_secret()).unwrap();
+
+        let new_recipient_list =
+            resolve_age_recipients(&[new_pubkey.to_string()], Some(&new_key_path)).unwrap();
+
+        rekey_file_age_with_recipients(&encrypted_path, &new_recipient_list, Some(&key_path))
+            .unwrap();
+
+        let re_decrypted = decrypt_age(&encrypted_path, Some(&new_key_path)).unwrap();
+        assert_eq!(re_decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_age_roundtrip_with_passphrase() {
+        let dir = tempdir().unwrap();
+        let input_path = dir.path().join("plaintext.txt");
+        let output_path = dir.path().join("plaintext.txt.age");
+
+        std::fs::write(&input_path, b"passphrase protected dotfile").unwrap();
+
+        let pass = SecretString::from("supersecret123".to_string());
+        encrypt_file_age_with_passphrase(&input_path, &output_path, pass).unwrap();
+        assert!(output_path.is_file());
+
+        // Decrypt using ENSTOW_PASSPHRASE
+        std::env::set_var("ENSTOW_PASSPHRASE", "supersecret123");
+        let decrypted = decrypt_age(&output_path, None).unwrap();
+        assert_eq!(decrypted, b"passphrase protected dotfile");
+        std::env::remove_var("ENSTOW_PASSPHRASE");
+        clear_session_passphrase();
+    }
+}

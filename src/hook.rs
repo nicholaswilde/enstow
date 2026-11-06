@@ -253,3 +253,191 @@ pub fn run_post_unstow_hooks(args: &ResolvedCommonArgs) -> Result<(), EnstowErro
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ResolvedHooks;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_hook_type_as_str() {
+        assert_eq!(HookType::PreApply.as_str(), "pre_apply");
+        assert_eq!(HookType::PostApply.as_str(), "post_apply");
+        assert_eq!(HookType::PreUnstow.as_str(), "pre_unstow");
+        assert_eq!(HookType::PostUnstow.as_str(), "post_unstow");
+    }
+
+    #[test]
+    fn test_execute_hook_dry_run() {
+        let dir = tempdir().unwrap();
+        let ctx = HookContext {
+            hook_type: HookType::PreApply,
+            package: Some("pkg1"),
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: true,
+            force: false,
+        };
+        // A command that would definitely fail if actually run
+        let res = execute_hook("exit 42", &ctx);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_execute_hook_success() {
+        let dir = tempdir().unwrap();
+        let ctx = HookContext {
+            hook_type: HookType::PreApply,
+            package: Some("pkg1"),
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: false,
+            force: false,
+        };
+
+        #[cfg(not(windows))]
+        let cmd = "true";
+        #[cfg(windows)]
+        let cmd = "cd .";
+
+        let res = execute_hook(cmd, &ctx);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_execute_hook_failure_and_force() {
+        let dir = tempdir().unwrap();
+
+        #[cfg(not(windows))]
+        let fail_cmd = "exit 1";
+        #[cfg(windows)]
+        let fail_cmd = "cmd /C exit 1";
+
+        // Without force: should return EnstowError::Hook
+        let ctx_no_force = HookContext {
+            hook_type: HookType::PreApply,
+            package: None,
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: false,
+            force: false,
+        };
+        let err = execute_hook(fail_cmd, &ctx_no_force).unwrap_err();
+        match err {
+            EnstowError::Hook {
+                hook_type, status, ..
+            } => {
+                assert_eq!(hook_type, "pre_apply");
+                assert!(status.contains("exit code 1"));
+            }
+            _ => panic!("Expected EnstowError::Hook, got {:?}", err),
+        }
+
+        // With force and PreApply: should succeed with a warning
+        let ctx_force_pre = HookContext {
+            hook_type: HookType::PreApply,
+            package: None,
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: false,
+            force: true,
+        };
+        assert!(execute_hook(fail_cmd, &ctx_force_pre).is_ok());
+
+        // With force and PreUnstow: should succeed with a warning
+        let ctx_force_unstow = HookContext {
+            hook_type: HookType::PreUnstow,
+            package: None,
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: false,
+            force: true,
+        };
+        assert!(execute_hook(fail_cmd, &ctx_force_unstow).is_ok());
+
+        // With force and PostApply: should still fail (force doesn't suppress post-apply)
+        let ctx_force_post = HookContext {
+            hook_type: HookType::PostApply,
+            package: None,
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: false,
+            force: true,
+        };
+        assert!(execute_hook(fail_cmd, &ctx_force_post).is_err());
+    }
+
+    #[test]
+    fn test_execute_hooks_multiple() {
+        let dir = tempdir().unwrap();
+        let ctx = HookContext {
+            hook_type: HookType::PreApply,
+            package: None,
+            source: dir.path(),
+            target: dir.path(),
+            dry_run: true,
+            force: false,
+        };
+        let commands = vec!["echo 1".to_string(), "echo 2".to_string()];
+        assert!(execute_hooks(&commands, &ctx).is_ok());
+    }
+
+    fn sample_args(dry_run: bool, no_hooks: bool) -> ResolvedCommonArgs {
+        let mut packages = BTreeMap::new();
+        let mut pkg_hooks = crate::config::HooksConfig::default();
+        pkg_hooks.pre_apply.push("echo pkg_pre".to_string());
+        pkg_hooks.post_apply.push("echo pkg_post".to_string());
+        pkg_hooks.pre_unstow.push("echo pkg_pre_unstow".to_string());
+        pkg_hooks
+            .post_unstow
+            .push("echo pkg_post_unstow".to_string());
+        packages.insert("dot_pkg".to_string(), pkg_hooks);
+
+        let mut global = crate::config::HooksConfig::default();
+        global.pre_apply.push("echo global_pre".to_string());
+        global.post_apply.push("echo global_post".to_string());
+        global.pre_unstow.push("echo global_pre_unstow".to_string());
+        global
+            .post_unstow
+            .push("echo global_post_unstow".to_string());
+
+        ResolvedCommonArgs {
+            source: PathBuf::from("/tmp/source"),
+            target: PathBuf::from("/tmp/target"),
+            dry_run,
+            force: false,
+            prune: false,
+            age_key_file: None,
+            profile: None,
+            packages: vec!["dot_pkg".to_string()],
+            ignore: Vec::new(),
+            backup: false,
+            backup_dir: PathBuf::from("/tmp/backup"),
+            permissions: crate::config::PermissionsConfig::default(),
+            adopt: false,
+            no_hooks,
+            hooks: ResolvedHooks { global, packages },
+        }
+    }
+
+    #[test]
+    fn test_run_hooks_no_hooks() {
+        let args = sample_args(false, true);
+        assert!(run_pre_apply_hooks(&args).is_ok());
+        assert!(run_post_apply_hooks(&args).is_ok());
+        assert!(run_pre_unstow_hooks(&args).is_ok());
+        assert!(run_post_unstow_hooks(&args).is_ok());
+    }
+
+    #[test]
+    fn test_run_hooks_execution_dry_run() {
+        let args = sample_args(true, false);
+        assert!(run_pre_apply_hooks(&args).is_ok());
+        assert!(run_post_apply_hooks(&args).is_ok());
+        assert!(run_pre_unstow_hooks(&args).is_ok());
+        assert!(run_post_unstow_hooks(&args).is_ok());
+    }
+}

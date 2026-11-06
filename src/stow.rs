@@ -1207,4 +1207,199 @@ mod tests {
             Path::new(r"\\server\share\file")
         );
     }
+
+    #[test]
+    fn test_is_stale_scan_ignored_dir() {
+        assert!(is_stale_scan_ignored_dir(".git"));
+        assert!(is_stale_scan_ignored_dir(".cargo"));
+        assert!(is_stale_scan_ignored_dir("target"));
+        assert!(is_stale_scan_ignored_dir("node_modules"));
+        assert!(!is_stale_scan_ignored_dir(".config"));
+        assert!(!is_stale_scan_ignored_dir("dotfiles"));
+    }
+
+    #[test]
+    fn test_compute_backup_dest() {
+        let backup_dir = Path::new("/backup");
+        let target_root = Path::new("/home/user");
+        let target = Path::new("/home/user/.config/app/cfg.toml");
+
+        // Target inside root
+        let dest = compute_backup_dest(target, backup_dir, Some(target_root));
+        assert_eq!(
+            dest,
+            PathBuf::from("/backup")
+                .join(".config")
+                .join("app")
+                .join("cfg.toml")
+        );
+
+        // Target outside root
+        let outside = Path::new("/etc/passwd");
+        let dest_out = compute_backup_dest(outside, backup_dir, Some(target_root));
+        assert_eq!(dest_out, PathBuf::from("/backup").join("passwd"));
+
+        // No root
+        let dest_no_root = compute_backup_dest(target, backup_dir, None);
+        assert_eq!(dest_no_root, PathBuf::from("/backup").join("cfg.toml"));
+    }
+
+    #[test]
+    fn test_clean_empty_parents() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("test.txt");
+        std::fs::write(&file, "hi").unwrap();
+
+        std::fs::remove_file(&file).unwrap();
+        clean_empty_parents(&file, dir.path());
+
+        // c, b, a should be removed, while root dir remains
+        assert!(!nested.exists());
+        assert!(!dir.path().join("a").exists());
+        assert!(dir.path().exists());
+    }
+
+    #[test]
+    fn test_create_symlink_and_is_symlink_to() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let other_src = dir.path().join("other_source.txt");
+        let tgt = dir.path().join("target.txt");
+        std::fs::write(&src, "content").unwrap();
+        std::fs::write(&other_src, "other content").unwrap();
+
+        assert!(create_symlink(&src, &tgt, false).is_ok());
+        assert!(is_symlink_to(&tgt, &src));
+        assert!(!is_symlink_to(&src, &tgt));
+
+        // Idempotent when creating same symlink again
+        assert!(create_symlink(&src, &tgt, false).is_ok());
+
+        // Collision when target already exists and points to a different source
+        assert!(matches!(
+            create_symlink(&other_src, &tgt, false),
+            Err(EnstowError::Collision { .. })
+        ));
+
+        // With force succeeds and overwrites to other_src
+        assert!(create_symlink(&other_src, &tgt, true).is_ok());
+        assert!(is_symlink_to(&tgt, &other_src));
+    }
+
+    #[test]
+    fn test_check_status_symlinks() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let tgt = dir.path().join("target.txt");
+        std::fs::write(&src, "content").unwrap();
+
+        let action = FileAction::Symlink {
+            source: src.clone(),
+            target: tgt.clone(),
+        };
+
+        // 1. Missing
+        let statuses = check_status(&[action.clone()], None).unwrap();
+        assert_eq!(statuses[0].status, EntryStatus::Missing);
+
+        // 2. Conflict (regular file exists at target)
+        std::fs::write(&tgt, "other content").unwrap();
+        let statuses = check_status(&[action.clone()], None).unwrap();
+        assert_eq!(statuses[0].status, EntryStatus::Conflict);
+
+        // 3. Synced
+        std::fs::remove_file(&tgt).unwrap();
+        create_symlink(&src, &tgt, true).unwrap();
+        let statuses = check_status(&[action], None).unwrap();
+        assert_eq!(statuses[0].status, EntryStatus::Synced);
+    }
+
+    #[test]
+    fn test_execute_plan_and_unstow_plan() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let tgt = dir.path().join("sub").join("tgt.txt");
+        std::fs::write(&src, "hello stow").unwrap();
+
+        let action = FileAction::Symlink {
+            source: src.clone(),
+            target: tgt.clone(),
+        };
+
+        // Dry run
+        assert!(execute_plan(&[action.clone()], true, None, false).is_ok());
+        assert!(std::fs::symlink_metadata(&tgt).is_err());
+
+        // Real execute
+        assert!(execute_plan(&[action.clone()], false, None, false).is_ok());
+        assert!(is_symlink_to(&tgt, &src));
+
+        // Unstow
+        assert!(execute_unstow_plan(&[action], dir.path(), false).is_ok());
+        assert!(std::fs::symlink_metadata(&tgt).is_err());
+    }
+
+    #[test]
+    fn test_find_age_secrets() {
+        let dir = tempdir().unwrap();
+        let pkg = dir.path().join("mypkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let normal = pkg.join("app.conf");
+        let age_secret = pkg.join("pass.age");
+        std::fs::write(&normal, "setting = 1").unwrap();
+        std::fs::write(&age_secret, "encrypted").unwrap();
+
+        let secrets = find_age_secrets(dir.path(), &["mypkg".to_string()], &[]).unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert!(secrets[0].ends_with("pass.age"));
+    }
+
+    #[test]
+    fn test_add_file_symlink() {
+        let dir = tempdir().unwrap();
+        let src_root = dir.path().join("dotfiles");
+        let tgt_root = dir.path().join("home");
+        let pkg_dir = src_root.join("zsh");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::create_dir_all(&tgt_root).unwrap();
+
+        let target_file = tgt_root.join(".zshrc");
+        std::fs::write(&target_file, "export PATH=$PATH:/bin").unwrap();
+
+        // Dry run
+        let (t, s) = add_file(
+            &target_file,
+            "zsh",
+            false,
+            &[],
+            None,
+            &src_root,
+            &tgt_root,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(t, target_file);
+        assert_eq!(s, pkg_dir.join(".zshrc"));
+        assert!(!pkg_dir.join(".zshrc").exists());
+
+        // Real add
+        let (t, s) = add_file(
+            &target_file,
+            "zsh",
+            false,
+            &[],
+            None,
+            &src_root,
+            &tgt_root,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(t, target_file);
+        assert!(s.is_file());
+        assert!(is_symlink_to(&target_file, &s));
+    }
 }

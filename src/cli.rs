@@ -326,3 +326,187 @@ pub fn generate_completions(shell: clap_complete::Shell, writer: &mut dyn Write)
         generate_static_completions(shell, writer);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_target_dir() {
+        let dir = default_target_dir();
+        assert!(!dir.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_generate_manpage() {
+        let mut buffer = Vec::new();
+        let res = generate_manpage(&mut buffer);
+        assert!(res.is_ok());
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.contains("enstow"));
+    }
+
+    #[test]
+    fn test_generate_completions_all_shells() {
+        for shell in [
+            clap_complete::Shell::Bash,
+            clap_complete::Shell::Zsh,
+            clap_complete::Shell::Fish,
+            clap_complete::Shell::PowerShell,
+            clap_complete::Shell::Elvish,
+        ] {
+            let mut buf_dyn = Vec::new();
+            assert!(generate_dynamic_completions(shell, &mut buf_dyn).is_ok());
+            assert!(!buf_dyn.is_empty());
+
+            let mut buf_stat = Vec::new();
+            generate_static_completions(shell, &mut buf_stat);
+            assert!(!buf_stat.is_empty());
+
+            let mut buf_comp = Vec::new();
+            generate_completions(shell, &mut buf_comp);
+            assert!(!buf_comp.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_subcommands() {
+        // apply
+        let cli = Cli::try_parse_from(["enstow", "apply", "pkg1", "-n", "-f", "--prune"]).unwrap();
+        match cli.command {
+            Some(Commands::Apply(args)) => {
+                assert!(args.dry_run);
+                assert!(args.force);
+                assert!(args.prune);
+                assert_eq!(args.packages, vec!["pkg1"]);
+            }
+            _ => panic!("Expected Apply command"),
+        }
+
+        // unstow
+        let cli = Cli::try_parse_from(["enstow", "unstow", "pkg1"]).unwrap();
+        match cli.command {
+            Some(Commands::Unstow(args)) => {
+                assert_eq!(args.packages, vec!["pkg1"]);
+            }
+            _ => panic!("Expected Unstow command"),
+        }
+
+        // restow
+        let cli = Cli::try_parse_from(["enstow", "restow", "pkg1", "--adopt"]).unwrap();
+        match cli.command {
+            Some(Commands::Restow(args)) => {
+                assert!(args.adopt);
+                assert_eq!(args.packages, vec!["pkg1"]);
+            }
+            _ => panic!("Expected Restow command"),
+        }
+
+        // diff
+        let cli = Cli::try_parse_from(["enstow", "diff", "--mask-secrets", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Diff {
+                mask_secrets, json, ..
+            }) => {
+                assert!(mask_secrets);
+                assert!(json);
+            }
+            _ => panic!("Expected Diff command"),
+        }
+
+        // status
+        let cli = Cli::try_parse_from(["enstow", "status", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Status { json, .. }) => {
+                assert!(json);
+            }
+            _ => panic!("Expected Status command"),
+        }
+
+        // add
+        let cli = Cli::try_parse_from([
+            "enstow",
+            "add",
+            "my_target",
+            "--package",
+            "mypkg",
+            "--encrypt",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Add {
+                file,
+                package,
+                encrypt,
+                ..
+            }) => {
+                assert_eq!(file, PathBuf::from("my_target"));
+                assert_eq!(package, "mypkg");
+                assert!(encrypt);
+            }
+            _ => panic!("Expected Add command"),
+        }
+
+        // encrypt
+        let cli = Cli::try_parse_from(["enstow", "encrypt", "secret.txt", "-p"]).unwrap();
+        match cli.command {
+            Some(Commands::Encrypt {
+                file, passphrase, ..
+            }) => {
+                assert_eq!(file, PathBuf::from("secret.txt"));
+                assert!(passphrase);
+            }
+            _ => panic!("Expected Encrypt command"),
+        }
+
+        // decrypt
+        let cli = Cli::try_parse_from(["enstow", "decrypt", "secret.age"]).unwrap();
+        match cli.command {
+            Some(Commands::Decrypt { file, .. }) => {
+                assert_eq!(file, PathBuf::from("secret.age"));
+            }
+            _ => panic!("Expected Decrypt command"),
+        }
+
+        // rekey
+        let cli = Cli::try_parse_from(["enstow", "rekey", "--recipient", "key1"]).unwrap();
+        match cli.command {
+            Some(Commands::Rekey { recipient, .. }) => {
+                assert_eq!(recipient, vec!["key1"]);
+            }
+            _ => panic!("Expected Rekey command"),
+        }
+
+        // edit
+        let cli = Cli::try_parse_from(["enstow", "edit", "secret.age"]).unwrap();
+        match cli.command {
+            Some(Commands::Edit { file, .. }) => {
+                assert_eq!(file, PathBuf::from("secret.age"));
+            }
+            _ => panic!("Expected Edit command"),
+        }
+
+        // completions
+        let cli = Cli::try_parse_from(["enstow", "completions", "bash", "--static"]).unwrap();
+        match cli.command {
+            Some(Commands::Completions {
+                shell,
+                static_completions,
+            }) => {
+                assert_eq!(shell, clap_complete::Shell::Bash);
+                assert!(static_completions);
+            }
+            _ => panic!("Expected Completions command"),
+        }
+
+        // man
+        let cli = Cli::try_parse_from(["enstow", "man"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Man)));
+    }
+
+    #[test]
+    fn test_cli_verbose_quiet_conflict() {
+        let err = Cli::try_parse_from(["enstow", "-v", "-q", "status"]).unwrap_err();
+        assert!(err.to_string().contains("cannot be used with"));
+    }
+}

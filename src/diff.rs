@@ -227,3 +227,130 @@ pub fn colorize_diff(diff: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_is_binary() {
+        assert!(!is_binary(b"hello world\n"));
+        assert!(!is_binary(b""));
+        assert!(is_binary(b"hello\0world"));
+    }
+
+    #[test]
+    fn test_format_unified_diff_unmasked() {
+        assert_eq!(
+            format_unified_diff("a", "b", "hello\n", "hello\n", false),
+            None
+        );
+        let diff = format_unified_diff("src", "dst", "line1\n", "line2\n", false).unwrap();
+        assert!(diff.contains("--- src"));
+        assert!(diff.contains("+++ dst"));
+        assert!(diff.contains("-line1"));
+        assert!(diff.contains("+line2"));
+    }
+
+    #[test]
+    fn test_format_unified_diff_masked() {
+        assert_eq!(
+            format_unified_diff("a", "b", "secret\n", "secret\n", true),
+            None
+        );
+        let diff = format_unified_diff("src", "dst", "secret1\n", "secret2\n", true).unwrap();
+        assert!(diff.contains("--- src"));
+        assert!(diff.contains("+++ dst"));
+        assert!(diff.contains("[MASKED]"));
+        assert!(!diff.contains("secret1"));
+        assert!(!diff.contains("secret2"));
+    }
+
+    #[test]
+    fn test_generate_diff_text() {
+        assert_eq!(
+            generate_diff_text("a", "b", b"same content", b"same content", false),
+            None
+        );
+
+        let bin_diff = generate_diff_text("a.bin", "b.bin", b"bin\0a", b"bin\0b", false).unwrap();
+        assert!(bin_diff.contains("Binary files a.bin and b.bin differ"));
+
+        let text_diff =
+            generate_diff_text("a.txt", "b.txt", b"hello\n", b"world\n", false).unwrap();
+        assert!(text_diff.contains("--- a.txt"));
+        assert!(text_diff.contains("+++ b.txt"));
+    }
+
+    #[test]
+    fn test_colorize_diff() {
+        let raw = "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n context\n";
+        let colored = colorize_diff(raw);
+        assert!(colored.contains("\x1b[1m--- a\x1b[0m"));
+        assert!(colored.contains("\x1b[1m+++ b\x1b[0m"));
+        assert!(colored.contains("\x1b[36m@@ -1 +1 @@\x1b[0m"));
+        assert!(colored.contains("\x1b[31m-old\x1b[0m"));
+        assert!(colored.contains("\x1b[32m+new\x1b[0m"));
+        assert!(colored.contains(" context\n"));
+    }
+
+    #[test]
+    fn test_compute_diff_symlink_actions() {
+        let dir = tempdir().unwrap();
+        let src_file = dir.path().join("source.txt");
+        let tgt_file = dir.path().join("target.txt");
+        fs::write(&src_file, "source content\n").unwrap();
+
+        // Target does not exist
+        let actions = vec![FileAction::Symlink {
+            source: src_file.clone(),
+            target: tgt_file.clone(),
+        }];
+        let diffs = compute_diff(&actions, None, false).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert!(!diffs[0].is_secret);
+        assert!(diffs[0].diff.contains("-source content"));
+
+        // Target exists with same content
+        fs::write(&tgt_file, "source content\n").unwrap();
+        let diffs_same = compute_diff(&actions, None, false).unwrap();
+        assert_eq!(diffs_same.len(), 0);
+
+        // Target exists with different content
+        fs::write(&tgt_file, "different content\n").unwrap();
+        let diffs_diff = compute_diff(&actions, None, false).unwrap();
+        assert_eq!(diffs_diff.len(), 1);
+        assert!(diffs_diff[0].diff.contains("-source content"));
+        assert!(diffs_diff[0].diff.contains("+different content"));
+
+        // Target is already symlinked to source
+        fs::remove_file(&tgt_file).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&src_file, &tgt_file).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&src_file, &tgt_file).unwrap();
+        let diffs_linked = compute_diff(&actions, None, false).unwrap();
+        assert_eq!(diffs_linked.len(), 0);
+    }
+
+    #[test]
+    fn test_compute_diff_unrecognized_secret() {
+        let dir = tempdir().unwrap();
+        let bad_secret = dir.path().join("not_a_secret.txt");
+        fs::write(&bad_secret, "plain").unwrap();
+
+        let actions = vec![FileAction::Decrypt {
+            source: bad_secret.clone(),
+            target: dir.path().join("target.txt"),
+        }];
+        let err = compute_diff(&actions, None, false).unwrap_err();
+        match err {
+            EnstowError::Config(msg) => {
+                assert!(msg.contains("Unrecognized secret format"));
+            }
+            _ => panic!("Expected EnstowError::Config, got {:?}", err),
+        }
+    }
+}

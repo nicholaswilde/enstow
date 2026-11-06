@@ -1036,3 +1036,366 @@ pub fn init_tracing(level_str: &str) -> Result<()> {
     tracing::subscriber::set_global_default(subscriber).ok();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_config_format_from_path() {
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("config.toml")),
+            Some(ConfigFormat::Toml)
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("config.yaml")),
+            Some(ConfigFormat::Yaml)
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("config.yml")),
+            Some(ConfigFormat::Yaml)
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("config.json")),
+            Some(ConfigFormat::Json)
+        );
+        assert_eq!(ConfigFormat::from_path(Path::new("config.txt")), None);
+        assert_eq!(ConfigFormat::from_path(Path::new("config")), None);
+    }
+
+    #[test]
+    fn test_recipients_config() {
+        let single = RecipientsConfig::Single("key1, key2\nkey3".to_string());
+        assert_eq!(single.to_recipients(), vec!["key1", "key2", "key3"]);
+
+        let list =
+            RecipientsConfig::List(vec!["key1, key2".to_string(), " key3 \n key4 ".to_string()]);
+        assert_eq!(list.to_recipients(), vec!["key1", "key2", "key3", "key4"]);
+    }
+
+    #[test]
+    fn test_permission_mode_and_parse() {
+        assert_eq!(parse_mode_str("600").unwrap(), 0o600);
+        assert_eq!(parse_mode_str("0644").unwrap(), 0o644);
+        assert_eq!(parse_mode_str("0o755").unwrap(), 0o755);
+        assert_eq!(parse_mode_str("0").unwrap(), 0);
+        assert!(parse_mode_str("888").is_err());
+        assert!(parse_mode_str("xyz").is_err());
+
+        assert_eq!(parse_mode_int(600).unwrap(), 0o600);
+        assert_eq!(parse_mode_int(0o644).unwrap(), 0o644);
+        assert_eq!(parse_mode_int(0o7777).unwrap(), 0o7777);
+        assert!(parse_mode_int(0o10000).is_err());
+
+        let pm_str = PermissionMode::Str("600".to_string());
+        assert_eq!(pm_str.to_mode().unwrap(), 0o600);
+
+        let pm_int = PermissionMode::Int(644);
+        assert_eq!(pm_int.to_mode().unwrap(), 0o644);
+    }
+
+    #[test]
+    fn test_config_parse_all_formats() {
+        let toml_str = r#"
+            source = "dotfiles"
+            target = "home"
+            packages = ["bash", "git"]
+        "#;
+        let cfg_toml = ConfigFile::parse(toml_str, ConfigFormat::Toml).unwrap();
+        assert_eq!(cfg_toml.source, Some(PathBuf::from("dotfiles")));
+        assert_eq!(cfg_toml.target, Some(PathBuf::from("home")));
+        assert_eq!(
+            cfg_toml.packages,
+            Some(vec!["bash".to_string(), "git".to_string()])
+        );
+
+        let yaml_str = r#"
+            source: dotfiles
+            target: home
+            packages:
+              - bash
+              - git
+        "#;
+        let cfg_yaml = ConfigFile::parse(yaml_str, ConfigFormat::Yaml).unwrap();
+        assert_eq!(cfg_yaml.source, Some(PathBuf::from("dotfiles")));
+
+        let json_str = r#"{
+            "source": "dotfiles",
+            "target": "home"
+        }"#;
+        let cfg_json = ConfigFile::parse(json_str, ConfigFormat::Json).unwrap();
+        assert_eq!(cfg_json.source, Some(PathBuf::from("dotfiles")));
+    }
+
+    #[test]
+    fn test_load_config_and_load_from_path() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        fs::write(&cfg_path, "source = \"my_source\"\n").unwrap();
+
+        // Valid explicit load
+        let (p, loaded) = load_config(Some(&cfg_path)).unwrap().unwrap();
+        assert_eq!(p, cfg_path);
+        assert_eq!(loaded.source, Some(PathBuf::from("my_source")));
+
+        // Missing file
+        let missing = dir.path().join("missing.toml");
+        assert!(load_config(Some(&missing)).is_err());
+
+        // Directory instead of file
+        assert!(load_config(Some(dir.path())).is_err());
+
+        // Unsupported extension
+        let txt_path = dir.path().join("config.txt");
+        fs::write(&txt_path, "source = \"txt\"\n").unwrap();
+        assert!(ConfigFile::load_from_path(&txt_path).is_err());
+    }
+
+    #[test]
+    fn test_permissions_config_resolve_mode() {
+        let mut pc = PermissionsConfig::new();
+        pc.add_rule("*.sh".to_string(), 0o755, Some("shell_pkg".to_string()));
+        pc.add_rule("id_ed25519*".to_string(), 0o600, None);
+
+        let target_root = Path::new("/home/user");
+        let shell_target = Path::new("/home/user/.local/bin/script.sh");
+        let shell_source = Path::new("/dotfiles/shell_pkg/.local/bin/script.sh");
+
+        // Matches pattern and package
+        assert_eq!(
+            pc.resolve_mode(shell_target, Some(shell_source), Some(target_root)),
+            0o755
+        );
+
+        // Does not match package
+        let other_source = Path::new("/dotfiles/other_pkg/.local/bin/script.sh");
+        assert_eq!(
+            pc.resolve_mode(shell_target, Some(other_source), Some(target_root)),
+            0o600
+        );
+
+        // Matches global rule without package restriction
+        let key_target = Path::new("/home/user/.ssh/id_ed25519");
+        assert_eq!(pc.resolve_mode(key_target, None, Some(target_root)), 0o600);
+    }
+
+    #[test]
+    fn test_resolve_hooks() {
+        let mut cfg = ConfigFile::default();
+        let mut global_hooks = HooksConfig::default();
+        global_hooks.pre_apply.push("echo pre".to_string());
+        cfg.hooks = Some(global_hooks);
+
+        let mut pkg_map = BTreeMap::new();
+        let mut pkg_cfg = PackageConfig::default();
+        let mut pkg_hooks = HooksConfig::default();
+        pkg_hooks.post_apply.push("echo post".to_string());
+        pkg_cfg.hooks = Some(pkg_hooks);
+        pkg_map.insert("pkg1".to_string(), pkg_cfg);
+        cfg.package = Some(pkg_map);
+
+        let resolved = resolve_hooks(Some(&cfg));
+        assert_eq!(resolved.global.pre_apply, vec!["echo pre"]);
+        assert_eq!(
+            resolved.packages.get("pkg1").unwrap().post_apply,
+            vec!["echo post"]
+        );
+    }
+
+    #[test]
+    fn test_resolve_packages() {
+        let mut cfg = ConfigFile::default();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".to_string(),
+            ProfileConfig {
+                packages: vec!["work_pkg".to_string()],
+            },
+        );
+        cfg.profiles = Some(profiles);
+        cfg.packages = Some(vec!["default_pkg".to_string()]);
+
+        // 1. Explicit CLI packages
+        let cli_pkgs = vec!["custom_pkg".to_string()];
+        assert_eq!(
+            resolve_packages(&cli_pkgs, None, Some(&cfg)).unwrap(),
+            vec!["custom_pkg"]
+        );
+
+        // 2. Profile selection
+        assert_eq!(
+            resolve_packages(&[], Some("work"), Some(&cfg)).unwrap(),
+            vec!["work_pkg"]
+        );
+        assert!(resolve_packages(&[], Some("nonexistent"), Some(&cfg)).is_err());
+
+        // 3. Config packages
+        assert_eq!(
+            resolve_packages(&[], None, Some(&cfg)).unwrap(),
+            vec!["default_pkg"]
+        );
+
+        // 4. Default profile
+        cfg.default_profile = Some("work".to_string());
+        assert_eq!(
+            resolve_packages(&[], None, Some(&cfg)).unwrap(),
+            vec!["work_pkg"]
+        );
+
+        // 5. None
+        assert_eq!(
+            resolve_packages(&[], None, None).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_resolve_profile() {
+        let mut cfg = ConfigFile::default();
+        cfg.default_profile = Some("work".to_string());
+
+        assert_eq!(
+            resolve_profile(Some("cli_profile"), Some(&cfg)),
+            Some("cli_profile".to_string())
+        );
+        assert_eq!(resolve_profile(None, Some(&cfg)), Some("work".to_string()));
+        assert_eq!(resolve_profile(None, None), None);
+    }
+
+    #[test]
+    fn test_resolve_source_and_target() {
+        let mut cfg = ConfigFile::default();
+        cfg.source = Some(PathBuf::from("/cfg/source"));
+        cfg.target = Some(PathBuf::from("/cfg/target"));
+
+        assert_eq!(
+            resolve_source(Some(Path::new("/cli/source")), Some(&cfg)),
+            PathBuf::from("/cli/source")
+        );
+        assert_eq!(
+            resolve_source(None, Some(&cfg)),
+            PathBuf::from("/cfg/source")
+        );
+        assert_eq!(resolve_source(None, None), PathBuf::from("."));
+
+        assert_eq!(
+            resolve_target(Some(Path::new("/cli/target")), Some(&cfg)),
+            PathBuf::from("/cli/target")
+        );
+        assert_eq!(
+            resolve_target(None, Some(&cfg)),
+            PathBuf::from("/cfg/target")
+        );
+    }
+
+    #[test]
+    fn test_resolve_dry_run() {
+        let mut cfg = ConfigFile::default();
+        cfg.dry_run = Some(true);
+
+        assert!(resolve_dry_run(true, None));
+        assert!(resolve_dry_run(false, Some(&cfg)));
+        assert!(!resolve_dry_run(false, None));
+    }
+
+    #[test]
+    fn test_parse_bool_env() {
+        assert_eq!(parse_bool_env("NON_EXISTENT_VAR_12345"), None);
+    }
+
+    #[test]
+    fn test_resolve_json_and_mask_secrets() {
+        let mut cfg = ConfigFile::default();
+        cfg.json = Some(true);
+        cfg.mask_secrets = Some(true);
+
+        assert!(resolve_json(true, None));
+        assert!(resolve_json(false, Some(&cfg)));
+        assert!(!resolve_json(false, None));
+
+        assert!(resolve_mask_secrets(true, None));
+        assert!(resolve_mask_secrets(false, Some(&cfg)));
+        assert!(!resolve_mask_secrets(false, None));
+    }
+
+    #[test]
+    fn test_resolve_editor_and_recipients() {
+        let mut cfg = ConfigFile::default();
+        cfg.editor = Some("nano".to_string());
+        cfg.recipients = Some(RecipientsConfig::Single("cfg_key".to_string()));
+
+        // CLI overrides everything
+        assert_eq!(
+            resolve_editor(Some("vim"), Some(&cfg)),
+            Some("vim".to_string())
+        );
+
+        let cli_recipients = vec!["cli_key".to_string()];
+        assert_eq!(
+            resolve_recipients(&cli_recipients, Some(&cfg)),
+            vec!["cli_key".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_resolve_age_key_file_and_ignore_patterns() {
+        let mut cfg = ConfigFile::default();
+        cfg.age_key_file = Some(PathBuf::from("/cfg/key"));
+        cfg.ignore = Some(vec!["*.swp".to_string()]);
+
+        // CLI overrides everything
+        assert_eq!(
+            resolve_age_key_file(Some(Path::new("/cli/key")), Some(&cfg)),
+            Some(PathBuf::from("/cli/key"))
+        );
+
+        let cli_ignore = vec!["*.bak".to_string()];
+        assert_eq!(
+            resolve_ignore_patterns(&cli_ignore, Some(&cfg)),
+            vec!["*.bak".to_string(), "*.swp".to_string()]
+        );
+        assert_eq!(
+            resolve_ignore_patterns(&[], Some(&cfg)),
+            vec!["*.swp".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_resolve_log_level_and_init_tracing() {
+        let mut cfg = ConfigFile::default();
+        cfg.log_level = Some("warn".to_string());
+
+        assert_eq!(resolve_log_level(Some("debug"), 0, 0, None), "debug");
+        assert_eq!(resolve_log_level(None, 1, 0, None), "debug");
+        assert_eq!(resolve_log_level(None, 2, 0, None), "trace");
+        assert_eq!(resolve_log_level(None, 0, 1, None), "warn");
+        assert_eq!(resolve_log_level(None, 0, 2, None), "error");
+        assert_eq!(resolve_log_level(None, 0, 0, Some(&cfg)), "warn");
+        assert_eq!(resolve_log_level(None, 0, 0, None), "info");
+
+        assert!(init_tracing("info").is_ok());
+        assert!(init_tracing("[invalid]=foo").is_err());
+    }
+
+    #[test]
+    fn test_resolve_common_args() {
+        let mut common = CommonArgs::default();
+        common.source = Some(PathBuf::from("/src"));
+        common.target = Some(PathBuf::from("/tgt"));
+        common.dry_run = true;
+        common.force = true;
+        common.packages = vec!["pkg1".to_string()];
+
+        let resolved = resolve_common_args(&common, None).unwrap();
+        assert_eq!(resolved.source, PathBuf::from("/src"));
+        assert_eq!(resolved.target, PathBuf::from("/tgt"));
+        assert!(resolved.dry_run);
+        assert!(resolved.force);
+        assert_eq!(resolved.packages, vec!["pkg1"]);
+
+        let back_to_common = resolved.to_common_args();
+        assert_eq!(back_to_common.source, Some(PathBuf::from("/src")));
+        assert!(back_to_common.dry_run);
+    }
+}
