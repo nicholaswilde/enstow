@@ -1301,12 +1301,12 @@ mod tests {
         };
 
         // 1. Missing
-        let statuses = check_status(&[action.clone()], None).unwrap();
+        let statuses = check_status(std::slice::from_ref(&action), None).unwrap();
         assert_eq!(statuses[0].status, EntryStatus::Missing);
 
         // 2. Conflict (regular file exists at target)
         std::fs::write(&tgt, "other content").unwrap();
-        let statuses = check_status(&[action.clone()], None).unwrap();
+        let statuses = check_status(std::slice::from_ref(&action), None).unwrap();
         assert_eq!(statuses[0].status, EntryStatus::Conflict);
 
         // 3. Synced
@@ -1329,11 +1329,11 @@ mod tests {
         };
 
         // Dry run
-        assert!(execute_plan(&[action.clone()], true, None, false).is_ok());
+        assert!(execute_plan(std::slice::from_ref(&action), true, None, false).is_ok());
         assert!(std::fs::symlink_metadata(&tgt).is_err());
 
         // Real execute
-        assert!(execute_plan(&[action.clone()], false, None, false).is_ok());
+        assert!(execute_plan(std::slice::from_ref(&action), false, None, false).is_ok());
         assert!(is_symlink_to(&tgt, &src));
 
         // Unstow
@@ -1359,8 +1359,9 @@ mod tests {
     #[test]
     fn test_add_file_symlink() {
         let dir = tempdir().unwrap();
-        let src_root = dir.path().join("dotfiles");
-        let tgt_root = dir.path().join("home");
+        let canon_root = normalize_path(&dir.path().canonicalize().unwrap());
+        let src_root = canon_root.join("dotfiles");
+        let tgt_root = canon_root.join("home");
         let pkg_dir = src_root.join("zsh");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::create_dir_all(&tgt_root).unwrap();
@@ -1381,8 +1382,8 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(t, target_file);
-        assert_eq!(s, pkg_dir.join(".zshrc"));
+        assert_eq!(normalize_path(&t), normalize_path(&target_file));
+        assert_eq!(normalize_path(&s), normalize_path(&pkg_dir.join(".zshrc")));
         assert!(!pkg_dir.join(".zshrc").exists());
 
         // Real add
@@ -1398,7 +1399,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(t, target_file);
+        assert_eq!(normalize_path(&t), normalize_path(&target_file));
         assert!(s.is_file());
         assert!(is_symlink_to(&target_file, &s));
     }

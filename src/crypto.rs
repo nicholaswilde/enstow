@@ -870,7 +870,7 @@ fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
             paths.push(p);
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let p = PathBuf::from(&home)
             .join(".config")
             .join("sops")
@@ -957,7 +957,9 @@ mod tests {
         assert_eq!(paths[0], PathBuf::from("/custom/age/key.txt"));
 
         let default_paths = get_age_key_paths(None);
-        assert!(!default_paths.is_empty());
+        if std::env::var("HOME").is_ok() || std::env::var("USERPROFILE").is_ok() {
+            assert!(!default_paths.is_empty());
+        }
     }
 
     #[test]
@@ -1012,7 +1014,7 @@ mod tests {
 
         let recipient_str = pubkey.to_string();
         let recipient_list =
-            resolve_age_recipients(&[recipient_str.clone()], Some(&key_path)).unwrap();
+            resolve_age_recipients(std::slice::from_ref(&recipient_str), Some(&key_path)).unwrap();
         assert_eq!(recipient_list.len(), 1);
 
         let plaintext = b"Hello, world of enstow tests!";

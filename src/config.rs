@@ -1252,8 +1252,10 @@ mod tests {
 
     #[test]
     fn test_resolve_profile() {
-        let mut cfg = ConfigFile::default();
-        cfg.default_profile = Some("work".to_string());
+        let cfg = ConfigFile {
+            default_profile: Some("work".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(
             resolve_profile(Some("cli_profile"), Some(&cfg)),
@@ -1265,9 +1267,11 @@ mod tests {
 
     #[test]
     fn test_resolve_source_and_target() {
-        let mut cfg = ConfigFile::default();
-        cfg.source = Some(PathBuf::from("/cfg/source"));
-        cfg.target = Some(PathBuf::from("/cfg/target"));
+        let cfg = ConfigFile {
+            source: Some(PathBuf::from("/cfg/source")),
+            target: Some(PathBuf::from("/cfg/target")),
+            ..Default::default()
+        };
 
         assert_eq!(
             resolve_source(Some(Path::new("/cli/source")), Some(&cfg)),
@@ -1291,8 +1295,10 @@ mod tests {
 
     #[test]
     fn test_resolve_dry_run() {
-        let mut cfg = ConfigFile::default();
-        cfg.dry_run = Some(true);
+        let cfg = ConfigFile {
+            dry_run: Some(true),
+            ..Default::default()
+        };
 
         assert!(resolve_dry_run(true, None));
         assert!(resolve_dry_run(false, Some(&cfg)));
@@ -1306,9 +1312,11 @@ mod tests {
 
     #[test]
     fn test_resolve_json_and_mask_secrets() {
-        let mut cfg = ConfigFile::default();
-        cfg.json = Some(true);
-        cfg.mask_secrets = Some(true);
+        let cfg = ConfigFile {
+            json: Some(true),
+            mask_secrets: Some(true),
+            ..Default::default()
+        };
 
         assert!(resolve_json(true, None));
         assert!(resolve_json(false, Some(&cfg)));
@@ -1321,9 +1329,11 @@ mod tests {
 
     #[test]
     fn test_resolve_editor_and_recipients() {
-        let mut cfg = ConfigFile::default();
-        cfg.editor = Some("nano".to_string());
-        cfg.recipients = Some(RecipientsConfig::Single("cfg_key".to_string()));
+        let cfg = ConfigFile {
+            editor: Some("nano".to_string()),
+            recipients: Some(RecipientsConfig::Single("cfg_key".to_string())),
+            ..Default::default()
+        };
 
         // CLI overrides everything
         assert_eq!(
@@ -1340,9 +1350,11 @@ mod tests {
 
     #[test]
     fn test_resolve_age_key_file_and_ignore_patterns() {
-        let mut cfg = ConfigFile::default();
-        cfg.age_key_file = Some(PathBuf::from("/cfg/key"));
-        cfg.ignore = Some(vec!["*.swp".to_string()]);
+        let cfg = ConfigFile {
+            age_key_file: Some(PathBuf::from("/cfg/key")),
+            ignore: Some(vec!["*.swp".to_string()]),
+            ..Default::default()
+        };
 
         // CLI overrides everything
         assert_eq!(
@@ -1363,8 +1375,10 @@ mod tests {
 
     #[test]
     fn test_resolve_log_level_and_init_tracing() {
-        let mut cfg = ConfigFile::default();
-        cfg.log_level = Some("warn".to_string());
+        let cfg = ConfigFile {
+            log_level: Some("warn".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(resolve_log_level(Some("debug"), 0, 0, None), "debug");
         assert_eq!(resolve_log_level(None, 1, 0, None), "debug");
@@ -1380,12 +1394,14 @@ mod tests {
 
     #[test]
     fn test_resolve_common_args() {
-        let mut common = CommonArgs::default();
-        common.source = Some(PathBuf::from("/src"));
-        common.target = Some(PathBuf::from("/tgt"));
-        common.dry_run = true;
-        common.force = true;
-        common.packages = vec!["pkg1".to_string()];
+        let common = CommonArgs {
+            source: Some(PathBuf::from("/src")),
+            target: Some(PathBuf::from("/tgt")),
+            dry_run: true,
+            force: true,
+            packages: vec!["pkg1".to_string()],
+            ..Default::default()
+        };
 
         let resolved = resolve_common_args(&common, None).unwrap();
         assert_eq!(resolved.source, PathBuf::from("/src"));
