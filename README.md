@@ -82,7 +82,8 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `add` | Ingest an existing machine dotfile into a package as a symlink or encrypted secret | `enstow add <file> -p <pkg> [--encrypt]` |
 | `apply` | Symlink regular files and decrypt secret files to target destination | `enstow apply [PACKAGES...]` |
 | `restow` | Clean stale symlinks/secrets and re-apply packages in one step | `enstow restow [PACKAGES...]` |
-| `unstow` | Remove symlinks and decrypted secret files managed by enstow | `enstow unstow [PACKAGES...]` |
+| `unstow` | Remove symlinks and decrypted secret files managed by enstow | `enstow unstow [PACKAGES...] [--shred]` |
+| `scrub` | Securely shred and remove decrypted secrets and symlinks | `enstow scrub [PACKAGES...]` |
 | `status` | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--json]` |
 | `encrypt` | Encrypt a secret dotfile into `.age` format | `enstow encrypt <file> [-r <key>]` |
 | `edit` | Interactively decrypt, edit in `$EDITOR`, and re-encrypt an age secret file | `enstow edit <file.age>` |
@@ -156,6 +157,12 @@ enstow unstow --dry-run zsh
 
 # Unstow specific packages
 enstow unstow zsh nvim
+
+# Securely shred decrypted secret files with zeros before unlinking
+enstow unstow --shred zsh nvim
+
+# Dedicated scrub command (equivalent to unstow --shred)
+enstow scrub zsh nvim
 ```
 
 ### Inspecting Status

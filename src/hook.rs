@@ -420,6 +420,7 @@ mod tests {
             adopt: false,
             no_hooks,
             hooks: ResolvedHooks { global, packages },
+            shred: false,
         }
     }
 

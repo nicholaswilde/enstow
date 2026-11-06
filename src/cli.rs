@@ -99,6 +99,10 @@ pub struct CommonArgs {
     /// Skip execution of pre- and post-lifecycle hooks
     #[arg(long = "no-hooks", alias = "skip-hooks", env = "ENSTOW_NO_HOOKS")]
     pub no_hooks: bool,
+
+    /// Securely shred decrypted secret files with zeros before unlinking
+    #[arg(long, env = "ENSTOW_SHRED")]
+    pub shred: bool,
 }
 
 impl CommonArgs {
@@ -163,6 +167,8 @@ pub enum Commands {
     Restow(CommonArgs),
     /// Unstow dotfiles: remove symlinks and decrypted secret files
     Unstow(CommonArgs),
+    /// Scrub dotfiles: securely shred and remove decrypted secrets and symlinks
+    Scrub(CommonArgs),
     /// Encrypt a secret dotfile
     Encrypt {
         /// File to encrypt

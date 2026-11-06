@@ -658,10 +658,92 @@ pub fn execute_plan_with_backup_and_permissions(
     Ok(())
 }
 
+/// Overwrite regular file content with zeros and flush to disk.
+pub fn zeroize_file(path: &Path) -> Result<(), EnstowError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| EnstowError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+
+    if metadata.is_file() {
+        let len = metadata.len();
+        if len > 0 {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = metadata.permissions();
+                if perms.mode() & 0o200 == 0 {
+                    perms.set_mode(perms.mode() | 0o200);
+                    let _ = std::fs::set_permissions(path, perms);
+                }
+            }
+            #[cfg(windows)]
+            {
+                let mut perms = metadata.permissions();
+                if perms.readonly() {
+                    perms.set_readonly(false);
+                    let _ = std::fs::set_permissions(path, perms);
+                }
+            }
+
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|e| EnstowError::Io {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
+
+            use std::io::Write;
+            const CHUNK_SIZE: usize = 8192;
+            const ZEROS: [u8; CHUNK_SIZE] = [0u8; CHUNK_SIZE];
+            let mut remaining = len;
+            while remaining > 0 {
+                let write_size = std::cmp::min(remaining, CHUNK_SIZE as u64) as usize;
+                file.write_all(&ZEROS[..write_size])
+                    .map_err(|e| EnstowError::Io {
+                        path: path.to_path_buf(),
+                        source: e,
+                    })?;
+                remaining -= write_size as u64;
+            }
+
+            file.sync_all().map_err(|e| EnstowError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Securely zeroize and delete a file.
+pub fn shred_file(path: &Path) -> Result<(), EnstowError> {
+    let _ = zeroize_file(path);
+    std::fs::remove_file(path).map_err(|e| EnstowError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
 pub fn execute_unstow_plan(
     actions: &[FileAction],
     target_root: &Path,
     dry_run: bool,
+) -> Result<(), EnstowError> {
+    execute_unstow_plan_with_shred(actions, target_root, dry_run, false)
+}
+
+pub fn execute_unstow_plan_with_shred(
+    actions: &[FileAction],
+    target_root: &Path,
+    dry_run: bool,
+    shred: bool,
 ) -> Result<(), EnstowError> {
     let target_canonical = target_root
         .canonicalize()
@@ -683,15 +765,24 @@ pub fn execute_unstow_plan(
                 }
             }
             FileAction::Decrypt { source: _, target } => {
-                if target.exists() {
+                if target.exists() || std::fs::symlink_metadata(target).is_ok() {
                     if dry_run {
-                        println!("[dry-run] REMOVE SECRET {}", target.display());
+                        if shred {
+                            println!("[dry-run] SHRED SECRET {}", target.display());
+                        } else {
+                            println!("[dry-run] REMOVE SECRET {}", target.display());
+                        }
                     } else {
-                        info!("Removing secret {}", target.display());
-                        std::fs::remove_file(target).map_err(|e| EnstowError::Io {
-                            path: target.to_path_buf(),
-                            source: e,
-                        })?;
+                        if shred {
+                            info!("Shredding secret {}", target.display());
+                            shred_file(target)?;
+                        } else {
+                            info!("Removing secret {}", target.display());
+                            std::fs::remove_file(target).map_err(|e| EnstowError::Io {
+                                path: target.to_path_buf(),
+                                source: e,
+                            })?;
+                        }
                         clean_empty_parents(target, &target_canonical);
                     }
                 }

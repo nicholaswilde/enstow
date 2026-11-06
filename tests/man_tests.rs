@@ -25,6 +25,7 @@ fn test_generate_manpage_renders_roff() {
     assert!(man_str.contains("add"));
     assert!(man_str.contains("restow"));
     assert!(man_str.contains("unstow"));
+    assert!(man_str.contains("scrub"));
     assert!(man_str.contains("encrypt"));
     assert!(man_str.contains("decrypt"));
     assert!(man_str.contains("edit"));

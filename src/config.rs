@@ -210,6 +210,7 @@ pub struct ConfigFile {
     pub package_permissions: Option<BTreeMap<String, BTreeMap<String, PermissionMode>>>,
     pub package_hooks: Option<BTreeMap<String, HooksConfig>>,
     pub no_hooks: Option<bool>,
+    pub shred: Option<bool>,
 }
 
 impl ConfigFile {
@@ -446,6 +447,7 @@ pub struct ResolvedCommonArgs {
     pub adopt: bool,
     pub no_hooks: bool,
     pub hooks: ResolvedHooks,
+    pub shred: bool,
 }
 
 impl ResolvedCommonArgs {
@@ -464,6 +466,7 @@ impl ResolvedCommonArgs {
             backup_dir: Some(self.backup_dir.clone()),
             adopt: self.adopt,
             no_hooks: self.no_hooks,
+            shred: self.shred,
         }
     }
 }
@@ -731,6 +734,15 @@ pub fn resolve_common_args(
     // 14. Lifecycle hooks resolution
     let hooks = resolve_hooks(config);
 
+    // 15. Shred precedence: CLI (--shred) > ENSTOW_SHRED > Config > Default (false)
+    let shred = if cli_args.shred {
+        true
+    } else if let Some(env_shred) = parse_bool_env("ENSTOW_SHRED") {
+        env_shred
+    } else {
+        config.and_then(|c| c.shred).unwrap_or_default()
+    };
+
     Ok(ResolvedCommonArgs {
         source,
         target,
@@ -747,6 +759,7 @@ pub fn resolve_common_args(
         adopt,
         no_hooks,
         hooks,
+        shred,
     })
 }
 

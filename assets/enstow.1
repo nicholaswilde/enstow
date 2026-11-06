@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH enstow 1  "enstow 0.1.2" 
+.TH enstow 1  "enstow 0.1.7" 
 .SH NAME
 enstow \- Secret\-aware dotfile manager combining stow symlinking with sops/age decryption
 .SH SYNOPSIS
-\fBenstow\fR [\fB\-C\fR|\fB\-\-config\fR] [\fB\-\-log\-level\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR]... [\fB\-s\fR|\fB\-\-source\fR] [\fB\-t\fR|\fB\-\-target\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-b\fR|\fB\-\-backup\fR] [\fB\-\-backup\-dir\fR] [\fB\-\-prune\fR] [\fB\-\-age\-key\-file\fR] [\fB\-\-profile\fR] [\fB\-i\fR|\fB\-\-ignore\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPACKAGES\fR] [\fIsubcommands\fR]
+\fBenstow\fR [\fB\-C\fR|\fB\-\-config\fR] [\fB\-\-log\-level\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-q\fR|\fB\-\-quiet\fR]... [\fB\-s\fR|\fB\-\-source\fR] [\fB\-t\fR|\fB\-\-target\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-b\fR|\fB\-\-backup\fR] [\fB\-\-backup\-dir\fR] [\fB\-\-prune\fR] [\fB\-\-adopt\fR] [\fB\-\-age\-key\-file\fR] [\fB\-\-profile\fR] [\fB\-i\fR|\fB\-\-ignore\fR] [\fB\-\-no\-hooks\fR] [\fB\-\-shred\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPACKAGES\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 Secret\-aware dotfile manager combining stow symlinking with sops/age decryption
 .SH OPTIONS
@@ -42,6 +42,9 @@ Directory to relocate conflicting target files during backup
 \fB\-\-prune\fR
 Prune stale symlinks for managed packages during apply
 .TP
+\fB\-\-adopt\fR
+Adopt existing files into source package when conflicts occur
+.TP
 \fB\-\-age\-key\-file\fR \fI<AGE_KEY_FILE>\fR
 Explicit path to age identity key file
 .TP
@@ -50,6 +53,12 @@ Dotfile profile to select packages from configuration
 .TP
 \fB\-i\fR, \fB\-\-ignore\fR \fI<PATTERN>\fR
 Additional pattern to ignore (can be specified multiple times)
+.TP
+\fB\-\-no\-hooks\fR
+Skip execution of pre\- and post\-lifecycle hooks
+.TP
+\fB\-\-shred\fR
+Securely shred decrypted secret files with zeros before unlinking
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
@@ -61,6 +70,9 @@ Print version
 Dotfile packages to stow or unstow
 .SH SUBCOMMANDS
 .TP
+enstow\-add(1)
+Add an existing target file to a package and replace it with a symlink or secret
+.TP
 enstow\-apply(1)
 Apply dotfiles: symlink regular files and decrypt secret files
 .TP
@@ -70,11 +82,20 @@ Restow dotfiles: clean stale symlinks/secrets and re\-apply
 enstow\-unstow(1)
 Unstow dotfiles: remove symlinks and decrypted secret files
 .TP
+enstow\-scrub(1)
+Scrub dotfiles: securely shred and remove decrypted secrets and symlinks
+.TP
 enstow\-encrypt(1)
 Encrypt a secret dotfile
 .TP
+enstow\-decrypt(1)
+Decrypt a secret dotfile
+.TP
 enstow\-edit(1)
 Edit an age encrypted secret file interactively
+.TP
+enstow\-rekey(1)
+Re\-encrypt age secret files with updated recipients across packages
 .TP
 enstow\-status(1)
 Show status of dotfiles and symlinks
@@ -91,6 +112,6 @@ Generate shell completions
 enstow\-help(1)
 Print this message or the help of the given subcommand(s)
 .SH VERSION
-v0.1.2
+v0.1.7
 .SH AUTHORS
 Nicholas Wilde

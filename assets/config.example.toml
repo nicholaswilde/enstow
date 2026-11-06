@@ -73,6 +73,9 @@
 # Bypass lifecycle hook execution ($ENSTOW_NO_HOOKS or --no-hooks)
 # no_hooks = false
 
+# Securely shred decrypted secret files with zeros before unlinking ($ENSTOW_SHRED or --shred)
+# shred = false
+
 # Lifecycle hooks for deployment (executed via system shell with contextual environment
 # variables: ENSTOW_PACKAGE, ENSTOW_SOURCE, ENSTOW_TARGET, ENSTOW_HOOK_TYPE, ENSTOW_DRY_RUN, ENSTOW_FORCE)
 # [hooks]
