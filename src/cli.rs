@@ -272,6 +272,16 @@ pub enum Commands {
         #[arg(long, alias = "no-secrets")]
         mask_secrets: bool,
     },
+    /// Check system health, secret hygiene, permissions, and symlinks
+    #[command(alias = "lint")]
+    Doctor {
+        #[command(flatten)]
+        common: CommonArgs,
+
+        /// Output report in JSON format ($ENSTOW_JSON)
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate UNIX roff man page
     Man,
     /// Generate shell completions
@@ -418,6 +428,22 @@ mod tests {
                 assert!(json);
             }
             _ => panic!("Expected Diff command"),
+        }
+
+        // doctor & lint alias
+        let cli = Cli::try_parse_from(["enstow", "doctor", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Doctor { json, .. }) => {
+                assert!(json);
+            }
+            _ => panic!("Expected Doctor command"),
+        }
+        let cli_lint = Cli::try_parse_from(["enstow", "lint"]).unwrap();
+        match cli_lint.command {
+            Some(Commands::Doctor { json, .. }) => {
+                assert!(!json);
+            }
+            _ => panic!("Expected Doctor command via lint alias"),
         }
 
         // status

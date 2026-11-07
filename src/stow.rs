@@ -403,7 +403,7 @@ pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     Ok(stale_actions)
 }
 
-fn is_stale_scan_ignored_dir(name: &str) -> bool {
+pub(crate) fn is_stale_scan_ignored_dir(name: &str) -> bool {
     matches!(
         name,
         ".git"

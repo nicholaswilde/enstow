@@ -210,6 +210,52 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Doctor { common, json }) => {
+            let resolved = enstow::config::resolve_common_args(&common, config.as_ref())?;
+            let common_args = resolved.to_common_args();
+            let json = enstow::config::resolve_json(json, config.as_ref());
+            let report = enstow::doctor::run_doctor(&common_args, Some(&resolved.permissions))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                use std::io::IsTerminal;
+                let colorize =
+                    std::io::stdout().is_terminal() && std::env::var("NO_COLOR").is_err();
+                for check in &report.checks {
+                    let tag = match check.severity {
+                        enstow::doctor::CheckSeverity::Ok => {
+                            if colorize {
+                                "\x1b[32m[OK]\x1b[0m   "
+                            } else {
+                                "[OK]   "
+                            }
+                        }
+                        enstow::doctor::CheckSeverity::Warning => {
+                            if colorize {
+                                "\x1b[33m[WARN]\x1b[0m "
+                            } else {
+                                "[WARN] "
+                            }
+                        }
+                        enstow::doctor::CheckSeverity::Error => {
+                            if colorize {
+                                "\x1b[31m[ERROR]\x1b[0m"
+                            } else {
+                                "[ERROR]"
+                            }
+                        }
+                    };
+                    println!("{} {}", tag, check.message);
+                }
+                println!(
+                    "\nDoctor summary: {} passed, {} warning(s), {} error(s).",
+                    report.ok, report.warnings, report.errors
+                );
+            }
+            if !report.healthy {
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Encrypt {
             file,
             output,
