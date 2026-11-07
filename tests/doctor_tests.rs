@@ -253,4 +253,185 @@ fn test_doctor_cli_binary_execution() {
     assert!(lint_output.status.success());
     let lint_stdout = String::from_utf8(lint_output.stdout).unwrap();
     assert!(lint_stdout.contains("Doctor summary:"));
+
+    // 3. Run doctor on failure (should exit non-zero)
+    let bad_key = source_dir.path().join("missing_key.txt");
+    let fail_output = std::process::Command::new(bin)
+        .arg("doctor")
+        .arg("--source")
+        .arg(source_dir.path())
+        .arg("--target")
+        .arg(target_dir.path())
+        .arg("--age-key-file")
+        .arg(&bad_key)
+        .output()
+        .expect("Failed to execute binary");
+
+    assert!(!fail_output.status.success());
+}
+
+#[test]
+fn test_doctor_symlink_health_target_not_exist_and_stale() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    // 1. Target directory does not exist yet
+    let nonexistent_target = target_dir.path().join("does_not_exist");
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(nonexistent_target),
+        ..Default::default()
+    };
+    let report = run_doctor(&args, None).unwrap();
+    assert!(report.healthy);
+    assert!(report.checks.iter().any(|c| c.category == "symlink_health"
+        && c.message
+            .contains("Target destination directory does not exist yet")));
+
+    // 2. Stale symlink: file exists in package, but is excluded by ignore rule
+    let pkg_file = source_dir.path().join("my_pkg").join("ignored_now.txt");
+    fs::create_dir_all(pkg_file.parent().unwrap()).unwrap();
+    fs::write(&pkg_file, "content").unwrap();
+
+    let stale_link = target_dir.path().join("ignored_now.txt");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&pkg_file, &stale_link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&pkg_file, &stale_link).unwrap();
+
+    let stale_args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        packages: vec!["my_pkg".into()],
+        ignore: vec!["ignored_now.txt".into()],
+        ..Default::default()
+    };
+    let stale_report = run_doctor(&stale_args, None).unwrap();
+    assert!(stale_report
+        .checks
+        .iter()
+        .any(|c| c.category == "symlink_health"
+            && c.severity == CheckSeverity::Warning
+            && c.message.contains("Stale symlink")));
+}
+
+#[test]
+fn test_doctor_secret_permissions_target_not_deployed_and_custom_rule() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+    let key_path = key_dir.path().join("key.txt");
+    let secret_path = source_dir.path().join("secret.age");
+
+    create_test_age_key_and_encrypted_file(&key_path, &secret_path, b"data");
+
+    // Target not deployed yet
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        age_key_file: Some(key_path),
+        ..Default::default()
+    };
+    let report = run_doctor(&args, None).unwrap();
+    assert!(report.healthy);
+    assert!(report
+        .checks
+        .iter()
+        .any(|c| c.category == "secret_permissions"
+            && c.message.contains("Secret target not yet deployed")));
+
+    // Deployed with custom permissions rule
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let target_file = target_dir.path().join("secret");
+        fs::write(&target_file, "data").unwrap();
+        fs::set_permissions(&target_file, fs::Permissions::from_mode(0o640)).unwrap();
+
+        let mut perms = enstow::config::PermissionsConfig::new();
+        perms.add_rule("secret".into(), 0o640, None);
+
+        let perms_report = run_doctor(&args, Some(&perms)).unwrap();
+        assert!(perms_report
+            .checks
+            .iter()
+            .any(|c| c.category == "secret_permissions"
+                && c.severity == CheckSeverity::Ok
+                && c.message.contains("0640")));
+    }
+}
+
+#[test]
+fn test_doctor_sops_config_and_secret_checks() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    // Create a .sops.yaml in source
+    let sops_config = source_dir.path().join(".sops.yaml");
+    fs::write(&sops_config, "creation_rules: []").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        ..Default::default()
+    };
+
+    let report = run_doctor(&args, None).unwrap();
+    assert!(report
+        .checks
+        .iter()
+        .any(|c| c.category == "decryption_prerequisites"
+            && (c.message.contains(".sops.yaml") || c.message.contains("sops"))));
+
+    // Also test with a .sops.json mock file
+    let sops_file = source_dir.path().join("secrets.sops.json");
+    fs::write(&sops_file, r#"{"data":"mock"}"#).unwrap();
+    let sops_report = run_doctor(&args, None).unwrap();
+    assert!(sops_report
+        .checks
+        .iter()
+        .any(|c| c.category == "decryption_prerequisites"));
+}
+
+#[test]
+fn test_doctor_all_leak_heuristics() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let heuristics = [
+        ("rsa.txt", "-----BEGIN RSA PRIVATE KEY-----\nMIIE..."),
+        ("dsa.txt", "-----BEGIN DSA PRIVATE KEY-----\nMIIB..."),
+        ("ec.txt", "-----BEGIN EC PRIVATE KEY-----\nMHQC..."),
+        ("pkcs8.txt", "-----BEGIN PRIVATE KEY-----\nMIIE..."),
+        ("pgp.txt", "-----BEGIN PGP PRIVATE KEY BLOCK-----\nmQEN..."),
+        ("age.txt", "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQ"),
+        (
+            "gho.txt",
+            "token = 'gho_1234567890abcdefghijklmnopqrstuvwxyz'",
+        ),
+        ("pat.txt", "token = 'github_pat_11AAAAAAA0123456789'"),
+        ("glpat.txt", "token = 'glpat-xxxxxxxxxxxxxxxxxxxx'"),
+        ("slack_b.txt", "slack = 'xoxb-1234567890-abcdef'"),
+        ("slack_p.txt", "slack = 'xoxp-1234567890-abcdef'"),
+        ("slack_a.txt", "slack = 'xoxa-1234567890-abcdef'"),
+    ];
+
+    for (name, content) in heuristics {
+        let f = source_dir.path().join(name);
+        fs::write(&f, content).unwrap();
+    }
+
+    // Also create a large file (> 1MB) that would otherwise match to verify it gets skipped
+    let large_file = source_dir.path().join("large_ignored.txt");
+    let large_buf = vec![b'A'; 1_000_001];
+    fs::write(&large_file, large_buf).unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        ..Default::default()
+    };
+
+    let report = run_doctor(&args, None).unwrap();
+    assert_eq!(report.warnings, heuristics.len());
 }

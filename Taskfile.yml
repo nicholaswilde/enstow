@@ -156,6 +156,7 @@ tasks:
     desc: Clean build artifacts
     cmds:
       - cargo clean
+      - rm -f lcov.info
 
   release:
     desc: Automated release tagging, validation, and version bump (./scripts/release.sh)
