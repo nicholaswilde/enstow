@@ -50,6 +50,15 @@ brew tap nicholaswilde/homebrew-tap
 brew install enstow
 ```
 
+### Scoop (Windows)
+
+Install `enstow` on Windows via [Scoop](https://scoop.sh/) using the [nicholaswilde/scoop-bucket](https://github.com/nicholaswilde/scoop-bucket):
+
+```powershell
+scoop bucket add nicholaswilde https://github.com/nicholaswilde/scoop-bucket
+scoop install enstow
+```
+
 ### Prerequisites
 
 - [Rust toolchain](https://rustup.rs/) (1.88+)
