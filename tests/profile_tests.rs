@@ -6,7 +6,10 @@ use enstow::config::{
 use enstow::stow::{execute_plan, plan_stow};
 use std::collections::BTreeMap;
 use std::fs;
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_config_deserialization_profiles() {
@@ -74,6 +77,7 @@ profiles:
 
 #[test]
 fn test_cli_parsing_profile_flag() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     // 1. apply --profile
     let cli = Cli::try_parse_from(["enstow", "apply", "--profile", "work"]).unwrap();
     match cli.command {
@@ -127,6 +131,7 @@ fn test_cli_parsing_profile_flag() {
 
 #[test]
 fn test_package_precedence_hierarchy() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let mut profiles = BTreeMap::new();
     profiles.insert(
         "work".to_string(),
@@ -178,6 +183,7 @@ fn test_package_precedence_hierarchy() {
 
 #[test]
 fn test_enstow_profile_env_var_support() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let mut profiles = BTreeMap::new();
     profiles.insert(
         "work".to_string(),
@@ -226,6 +232,7 @@ fn test_enstow_profile_env_var_support() {
 
 #[test]
 fn test_unknown_profile_errors() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let mut profiles = BTreeMap::new();
     profiles.insert(
         "work".to_string(),
@@ -277,6 +284,7 @@ fn test_unknown_profile_errors() {
 
 #[test]
 fn test_end_to_end_profile_filtering() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let source_dir = tempdir().unwrap();
     let target_dir = tempdir().unwrap();
 
