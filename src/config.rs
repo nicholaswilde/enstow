@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::{default_target_dir, CommonArgs};
+use crate::cli::{default_dotfiles_dir, default_target_dir, CommonArgs};
 
 /// Format of configuration files supported by `enstow`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,6 +754,241 @@ pub fn resolve_profile(cli_profile: Option<&str>, config: Option<&ConfigFile>) -
                 .filter(|s| !s.is_empty())
                 .map(String::from)
         })
+}
+
+fn expand_tilde(path: &Path) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~") {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Resolve source directory for `init` command: CLI > ENSTOW_SOURCE > Config > Default (~/.dotfiles)
+pub fn resolve_init_source(cli_source: Option<&Path>, config: Option<&ConfigFile>) -> PathBuf {
+    let resolved = resolve_source(cli_source, config);
+    if cli_source.is_none() && resolved == Path::new(".") {
+        default_dotfiles_dir()
+    } else {
+        expand_tilde(&resolved)
+    }
+}
+
+/// Discover a repository-embedded configuration file within `source_dir`.
+pub fn discover_repo_config(source_dir: &Path) -> Result<Option<(PathBuf, ConfigFile)>> {
+    let candidates = [
+        source_dir.join("enstow.toml"),
+        source_dir.join("enstow.yaml"),
+        source_dir.join("enstow.yml"),
+        source_dir.join("enstow.json"),
+        source_dir.join(".enstow.toml"),
+        source_dir.join(".enstow.yaml"),
+        source_dir.join(".enstow.yml"),
+        source_dir.join(".enstow.json"),
+        source_dir
+            .join(".config")
+            .join("enstow")
+            .join("config.toml"),
+        source_dir
+            .join(".config")
+            .join("enstow")
+            .join("config.yaml"),
+        source_dir.join(".config").join("enstow").join("config.yml"),
+        source_dir
+            .join(".config")
+            .join("enstow")
+            .join("config.json"),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(Some((
+                candidate.clone(),
+                ConfigFile::load_from_path(&candidate)?,
+            )));
+        }
+    }
+
+    for name in ["config.toml", "config.yaml", "config.yml", "config.json"] {
+        let candidate = source_dir.join(name);
+        if let Ok(cfg) = ConfigFile::load_from_path(&candidate) {
+            if cfg != ConfigFile::default() {
+                return Ok(Some((candidate, cfg)));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Auto-detect a matching profile from configuration based on host metadata
+/// (hostname, `<os>-<arch>`, `<os>`, or `default_profile`).
+pub fn detect_host_profile(config: Option<&ConfigFile>, host: &HostInfo) -> Option<String> {
+    let cfg = config?;
+    let profiles = cfg.profiles.as_ref()?;
+
+    if let Some(name) = profiles
+        .keys()
+        .find(|n| matches_hostname_filter(n.trim(), host.hostname.trim()))
+    {
+        return Some(name.clone());
+    }
+
+    if let Some(name) = profiles.keys().find(|n| {
+        n.split_once(['-', '_']).is_some_and(|(o, a)| {
+            matches_os_filter(o.trim(), host.os.trim())
+                && matches_arch_filter(a.trim(), host.arch.trim())
+        })
+    }) {
+        return Some(name.clone());
+    }
+
+    if let Some(name) = profiles
+        .keys()
+        .find(|n| matches_os_filter(n.trim(), host.os.trim()))
+    {
+        return Some(name.clone());
+    }
+
+    cfg.default_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|def| profiles.contains_key(*def))
+        .map(String::from)
+}
+
+fn is_known_os_name(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "linux" | "macos" | "darwin" | "windows" | "freebsd" | "openbsd" | "netbsd"
+    )
+}
+
+fn is_known_arch_name(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "x86_64" | "amd64" | "aarch64" | "arm64" | "arm" | "armv7" | "i686" | "riscv64"
+    )
+}
+
+/// Evaluate whether a package directory name is compatible with `host`.
+pub fn is_package_dir_compatible_with_host(
+    pkg_name: &str,
+    config: Option<&ConfigFile>,
+    host: &HostInfo,
+) -> bool {
+    if let Some(pkg_cfg) = config
+        .and_then(|c| c.package.as_ref())
+        .and_then(|pkgs| pkgs.get(pkg_name))
+    {
+        return pkg_cfg.matches_host(host);
+    }
+
+    let trimmed = pkg_name.trim();
+    if is_known_os_name(trimmed) {
+        return matches_os_filter(trimmed, host.os.trim());
+    }
+
+    if let Some((os_part, arch_part)) = trimmed.split_once(['-', '_']) {
+        if is_known_os_name(os_part) && is_known_arch_name(arch_part) {
+            return matches_os_filter(os_part, host.os.trim())
+                && matches_arch_filter(arch_part, host.arch.trim());
+        }
+    }
+
+    true
+}
+
+fn is_ignored_root_item(name: &str) -> bool {
+    const IGNORED: &[&str] = &[
+        ".git",
+        ".gitignore",
+        ".codegraph",
+        ".serena",
+        ".agents",
+        ".github",
+        "target",
+        "Cargo.lock",
+        ".enstowignore",
+        ".stow-local-ignore",
+        "enstow.toml",
+        "enstow.yaml",
+        "enstow.yml",
+        "enstow.json",
+        ".enstow.toml",
+        ".enstow.yaml",
+        ".enstow.yml",
+        ".enstow.json",
+        "config.toml",
+        "config.yaml",
+        "config.yml",
+        "config.json",
+    ];
+    IGNORED.contains(&name)
+        || name.starts_with(".secrets.")
+        || name.starts_with(".enstow-secrets")
+        || name.eq_ignore_ascii_case("readme.md")
+        || name.eq_ignore_ascii_case("readme")
+        || name.eq_ignore_ascii_case("license")
+        || name.eq_ignore_ascii_case("license.md")
+}
+
+fn dir_looks_like_package(source_dir: &Path, dir_name: &str) -> bool {
+    is_known_os_name(dir_name)
+        || matches!(
+            dir_name.to_ascii_lowercase().as_str(),
+            "common" | "base" | "shared"
+        )
+        || dir_name
+            .split_once(['-', '_'])
+            .is_some_and(|(o, a)| is_known_os_name(o) && is_known_arch_name(a))
+        || fs::read_dir(source_dir.join(dir_name))
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|item| item.file_name().to_string_lossy().starts_with('.'))
+}
+
+/// Auto-detect package directories inside `source_dir` matching `host` when no profile or explicit package list is set.
+pub fn detect_host_packages(
+    source_dir: &Path,
+    config: Option<&ConfigFile>,
+    host: &HostInfo,
+) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(source_dir) else {
+        return Vec::new();
+    };
+
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_ignored_root_item(&name) {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|ft| ft.is_dir()) && !name.starts_with('.') {
+            subdirs.push(name);
+        } else {
+            return Vec::new();
+        }
+    }
+
+    subdirs.sort();
+    let has_pkg_cfg = config
+        .and_then(|c| c.package.as_ref())
+        .is_some_and(|p| !p.is_empty());
+    if !has_pkg_cfg
+        && !subdirs
+            .iter()
+            .any(|d| dir_looks_like_package(source_dir, d))
+    {
+        return Vec::new();
+    }
+
+    subdirs
+        .into_iter()
+        .filter(|pkg| is_package_dir_compatible_with_host(pkg, config, host))
+        .collect()
 }
 
 /// Resolve source directory precedence: CLI > ENSTOW_SOURCE > Config > Default (".")

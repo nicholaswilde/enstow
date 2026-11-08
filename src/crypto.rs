@@ -1097,6 +1097,129 @@ pub fn edit_file_age(
     Ok(true)
 }
 
+pub fn default_age_key_file() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let trimmed = xdg.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed)
+                .join("sops")
+                .join("age")
+                .join("keys.txt");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        let trimmed = home.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed)
+                .join(".config")
+                .join("sops")
+                .join("age")
+                .join("keys.txt");
+        }
+    }
+    PathBuf::from(".config")
+        .join("sops")
+        .join("age")
+        .join("keys.txt")
+}
+
+pub fn has_valid_identity(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    if let Ok(identity_file) = age::IdentityFile::from_file(path.to_string_lossy().into_owned()) {
+        if let Ok(ids) = identity_file.into_identities() {
+            if !ids.is_empty() {
+                return true;
+            }
+        }
+    }
+    if let Ok(file) = File::open(path) {
+        if let Ok(ssh_id) = age::ssh::Identity::from_buffer(
+            std::io::BufReader::new(file),
+            Some(path.to_string_lossy().into_owned()),
+        ) {
+            if !matches!(ssh_id, age::ssh::Identity::Unsupported(_)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn find_existing_age_key(explicit_key: Option<&Path>) -> Option<PathBuf> {
+    if let Some(explicit) = explicit_key {
+        if has_valid_identity(explicit) {
+            return Some(explicit.to_path_buf());
+        }
+        return None;
+    }
+    get_age_key_paths(None)
+        .into_iter()
+        .find(|kp| has_valid_identity(kp))
+}
+
+pub fn import_age_key(
+    input: &str,
+    dest_path: &Path,
+    dry_run: bool,
+) -> Result<PathBuf, EnstowError> {
+    use std::str::FromStr;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(EnstowError::Config(
+            "Age identity key input cannot be empty".into(),
+        ));
+    }
+
+    if let Ok(identity) = age::x25519::Identity::from_str(trimmed) {
+        let pubkey = identity.to_public();
+        let content = format!("# public key: {pubkey}\n{trimmed}\n");
+        if dry_run {
+            println!("[dry-run] IMPORT KEY -> {}", dest_path.display());
+            return Ok(dest_path.to_path_buf());
+        }
+        write_secure_file(dest_path, content.as_bytes(), true)?;
+        return Ok(dest_path.to_path_buf());
+    }
+
+    let file_path = if let Some(rest) = trimmed.strip_prefix("~/") {
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or_else(|_| PathBuf::from(trimmed))
+    } else {
+        PathBuf::from(trimmed)
+    };
+
+    if file_path.is_file() {
+        if !has_valid_identity(&file_path) {
+            return Err(EnstowError::Config(format!(
+                "File '{}' does not contain a valid age or SSH identity",
+                file_path.display()
+            )));
+        }
+        if dry_run {
+            println!(
+                "[dry-run] IMPORT KEY {} -> {}",
+                file_path.display(),
+                dest_path.display()
+            );
+            return Ok(dest_path.to_path_buf());
+        }
+        let content = std::fs::read(&file_path).map_err(|e| EnstowError::Io {
+            path: file_path.clone(),
+            source: e,
+        })?;
+        write_secure_file(dest_path, &content, true)?;
+        return Ok(dest_path.to_path_buf());
+    }
+
+    Err(EnstowError::Config(format!(
+        "Invalid age identity key or file path: '{trimmed}'"
+    )))
+}
+
 fn get_age_key_paths(explicit_key: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(explicit) = explicit_key {

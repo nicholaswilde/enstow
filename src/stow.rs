@@ -1014,6 +1014,14 @@ const DEFAULT_IGNORES: &[&str] = &[
     ".secrets.age",
     ".secrets.*.age",
     ".enstow-secrets*",
+    "enstow.toml",
+    "enstow.yaml",
+    "enstow.yml",
+    "enstow.json",
+    ".enstow.toml",
+    ".enstow.yaml",
+    ".enstow.yml",
+    ".enstow.json",
 ];
 
 fn build_gitignore(pkg_root: &Path, source_root: &Path, extra_patterns: &[String]) -> Gitignore {

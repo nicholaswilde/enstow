@@ -19,6 +19,21 @@ fn main() -> anyhow::Result<()> {
     tracing::debug!("Log level initialized to '{}'", log_level);
 
     match cli.command {
+        Some(Commands::Init(args)) => {
+            let report = enstow::init::run_init(&args, config.as_ref())?;
+            if !args.dry_run {
+                println!(
+                    "Initialized {} -> {} (host: {}/{}, profile: {}, packages: [{}], actions: {})",
+                    report.source.display(),
+                    report.target.display(),
+                    report.host.os,
+                    report.host.arch,
+                    report.profile.as_deref().unwrap_or("none"),
+                    report.packages.join(", "),
+                    report.applied_actions
+                );
+            }
+        }
         Some(Commands::Add {
             file,
             package,

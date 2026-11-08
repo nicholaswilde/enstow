@@ -79,6 +79,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
+| `init` | Bootstrap dotfile repository onboarding: clone, detect host/profile, check keys, and apply | `enstow init [REPO] [-s ~/.dotfiles]` |
 | `add` | Ingest an existing machine dotfile into a package as a symlink or encrypted secret | `enstow add <file> -p <pkg> [--encrypt]` |
 | `apply` | Symlink regular files and decrypt secret files to target destination | `enstow apply [PACKAGES...]` |
 | `restow` | Clean stale symlinks/secrets and re-apply packages in one step | `enstow restow [PACKAGES...]` |
@@ -89,6 +90,21 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `edit` | Interactively decrypt, edit in `$EDITOR`, and re-encrypt an age secret file | `enstow edit <file.age>` |
 | `completions` | Output dynamic or static shell completion script (`bash`, `zsh`, `fish`, `powershell`, `elvish`) | `enstow completions zsh [--static]` |
 | `man` | Output UNIX roff man page | `enstow man > assets/enstow.1` |
+
+### Bootstrapping a New Machine (`enstow init`)
+
+Bootstrap dotfile management on a new machine in a single command:
+
+```bash
+# Clone remote dotfiles to ~/.dotfiles, auto-detect host/profile, check/import age key, run pre-flight check, and apply
+enstow init https://github.com/username/dotfiles.git
+
+# Preview onboarding actions without modifying disk
+enstow init https://github.com/username/dotfiles.git --dry-run
+
+# Clone a specific branch into a custom source directory
+enstow init https://github.com/username/dotfiles.git --branch main -s ~/dotfiles
+```
 
 ### Applying Dotfiles
 

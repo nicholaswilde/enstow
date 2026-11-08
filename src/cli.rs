@@ -125,8 +125,86 @@ impl CommonArgs {
     }
 }
 
+#[derive(Args, Debug, Clone, PartialEq, Eq, Default)]
+pub struct InitArgs {
+    /// Remote git repository URL or path to clone
+    #[arg(value_name = "REPO")]
+    pub repo: Option<String>,
+
+    /// Git branch or tag to checkout when cloning
+    #[arg(long, value_name = "BRANCH")]
+    pub branch: Option<String>,
+
+    /// Source directory to clone into or initialize (defaults to ~/.dotfiles)
+    #[arg(short, long)]
+    pub source: Option<PathBuf>,
+
+    /// Target directory to apply dotfiles
+    #[arg(short, long)]
+    pub target: Option<PathBuf>,
+
+    /// Preview actions without writing changes to disk
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Overwrite existing target files or differing symlinks
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Backup conflicting target files before overwriting
+    #[arg(short = 'b', long)]
+    pub backup: bool,
+
+    /// Directory to relocate conflicting target files during backup
+    #[arg(long, value_name = "PATH")]
+    pub backup_dir: Option<PathBuf>,
+
+    /// Prune stale symlinks for managed packages during apply
+    #[arg(long)]
+    pub prune: bool,
+
+    /// Adopt existing files into source package when conflicts occur
+    #[arg(long)]
+    pub adopt: bool,
+
+    /// Interactively resolve target file collisions and local drift
+    #[arg(short = 'I', long, env = "ENSTOW_INTERACTIVE")]
+    pub interactive: bool,
+
+    /// Explicit path to age identity key file
+    #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
+    pub age_key_file: Option<PathBuf>,
+
+    /// Dotfile profile to select packages from configuration
+    #[arg(long, env = "ENSTOW_PROFILE", value_name = "NAME")]
+    pub profile: Option<String>,
+
+    /// Dotfile packages to apply (can be specified multiple times)
+    #[arg(
+        short,
+        long = "package",
+        visible_alias = "packages",
+        value_name = "PACKAGE"
+    )]
+    pub packages: Vec<String>,
+
+    /// Additional pattern to ignore (can be specified multiple times)
+    #[arg(short, long, value_name = "PATTERN")]
+    pub ignore: Vec<String>,
+
+    /// Skip execution of pre- and post-lifecycle hooks
+    #[arg(long = "no-hooks", alias = "skip-hooks", env = "ENSTOW_NO_HOOKS")]
+    pub no_hooks: bool,
+
+    /// Securely shred decrypted secret files with zeros before unlinking
+    #[arg(long, env = "ENSTOW_SHRED")]
+    pub shred: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Bootstrap dotfile repository onboarding: clone, detect host/profile, check keys, and apply
+    Init(InitArgs),
     /// Add an existing target file to a package and replace it with a symlink or secret
     Add {
         /// Target file to add into the package
@@ -302,6 +380,13 @@ pub fn default_target_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn default_dotfiles_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|h| PathBuf::from(h).join(".dotfiles"))
+        .unwrap_or_else(|| PathBuf::from(".dotfiles"))
 }
 
 pub fn generate_manpage(writer: &mut dyn Write) -> anyhow::Result<()> {
