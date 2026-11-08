@@ -36,18 +36,23 @@ fn init_git_repo(repo_dir: &Path) {
     };
 
     run_git(&["init"]);
+    run_git(&["config", "core.autocrlf", "false"]);
     run_git(&["add", "."]);
     run_git(&["commit", "-m", "initial commit"]);
 }
 
 fn encrypt_age_bytes(plaintext: &[u8], pubkey: &age::x25519::Recipient) -> Vec<u8> {
-    let recipient: &dyn Recipient = pubkey;
-    let encryptor = age::Encryptor::with_recipients(std::iter::once(recipient)).unwrap();
-    let mut encrypted = Vec::new();
-    let mut writer = encryptor.wrap_output(&mut encrypted).unwrap();
-    writer.write_all(plaintext).unwrap();
-    writer.finish().unwrap();
-    encrypted
+    loop {
+        let recipient: &dyn Recipient = pubkey;
+        let encryptor = age::Encryptor::with_recipients(std::iter::once(recipient)).unwrap();
+        let mut encrypted = Vec::new();
+        let mut writer = encryptor.wrap_output(&mut encrypted).unwrap();
+        writer.write_all(plaintext).unwrap();
+        writer.finish().unwrap();
+        if !encrypted.contains(&0) {
+            return encrypted;
+        }
+    }
 }
 
 #[test]

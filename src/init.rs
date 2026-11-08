@@ -74,7 +74,7 @@ fn invoke_git_clone(repo: &str, dest: &Path, branch: Option<&str>) -> Result<(),
     }
 
     let mut cmd = Command::new("git");
-    cmd.arg("clone");
+    cmd.args(["-c", "core.autocrlf=false", "clone"]);
     if let Some(b) = branch.map(str::trim).filter(|s| !s.is_empty()) {
         cmd.arg("--branch").arg(b);
     }
