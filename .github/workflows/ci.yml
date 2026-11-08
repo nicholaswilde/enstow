@@ -156,7 +156,11 @@ jobs:
         run: task coverage:report
 
       - name: Coveralls
-        uses: coverallsapp/github-action@v2
-        with:
-          files: lcov.info
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERALLS_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERALLS_SOURCE_HEADER: github-action
+        run: |
+          gh release download --repo coverallsapp/coverage-reporter -p "coveralls-linux-x86_64.tar.gz" -p "coveralls-checksums.txt" -D /tmp --clobber
+          (cd /tmp && grep "coveralls-linux-x86_64.tar.gz" coveralls-checksums.txt | sha256sum -c - && tar -xzf coveralls-linux-x86_64.tar.gz)
+          /tmp/coveralls report lcov.info
