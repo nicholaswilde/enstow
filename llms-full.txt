@@ -427,6 +427,14 @@ post_apply = "echo 'Deployment complete'"
 
 [package.bat.hooks]
 post_apply = "bat cache --build"
+
+[package.macos-defaults]
+os = "macos"
+
+[package.linux-desktop]
+os = ["linux", "freebsd"]
+arch = "x86_64"
+hostname = ["workstation", "laptop"]
 ```
 
 ### Contextual Environment Variables
@@ -455,6 +463,7 @@ Hooks can be bypassed on demand using `--no-hooks` or `ENSTOW_NO_HOOKS=1`.
 | `<name>.sops.json` | `sops` | `<name>.json` | `0600` (`-rw-------`) or configured mode |
 | `<name>.sops.<ext>` | `sops` | `<name>.<ext>` | `0600` (`-rw-------`) or configured mode |
 | `.sops.yaml` (exact) | `sops` | `.sops.yaml` | `0600` (`-rw-------`) or configured mode |
+| `<name>.tmpl` | `template` | `<name>` | `0600` (`-rw-------`) or configured mode |
 
 Regular non-secret files are linked directly via filesystem symlinks (`symlink(source, target)`).
 
@@ -584,6 +593,14 @@ post_unstow = "echo 'Unstow finished'"
 
 [package.bat.hooks]
 post_apply = "bat cache --build"
+
+[package.macos-defaults]
+os = "macos"
+
+[package.linux-desktop]
+os = ["linux", "freebsd"]
+arch = "x86_64"
+hostname = ["workstation", "laptop"]
 ```
 
 #### YAML Example (`~/.config/enstow/config.yaml`)

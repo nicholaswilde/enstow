@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
             }
             let actions = stow::plan_stow(&common)?;
             enstow::hook::run_pre_apply_hooks(&resolved)?;
-            stow::execute_plan_with_backup_and_permissions(
+            stow::execute_plan_interactive(
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&common.target_path()),
                 Some(&resolved.permissions),
                 common.adopt,
+                common.interactive,
             )?;
             enstow::hook::run_post_apply_hooks(&resolved)?;
         }
@@ -113,7 +114,7 @@ fn main() -> anyhow::Result<()> {
 
             enstow::hook::run_pre_apply_hooks(&resolved)?;
             let apply_actions = stow::plan_stow(&common)?;
-            stow::execute_plan_with_backup_and_permissions(
+            stow::execute_plan_interactive(
                 &apply_actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -123,6 +124,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&common.target_path()),
                 Some(&resolved.permissions),
                 common.adopt,
+                common.interactive,
             )?;
             enstow::hook::run_post_apply_hooks(&resolved)?;
         }
@@ -398,7 +400,7 @@ fn main() -> anyhow::Result<()> {
             let common = resolved.to_common_args();
             let actions = stow::plan_stow(&common)?;
             enstow::hook::run_pre_apply_hooks(&resolved)?;
-            stow::execute_plan_with_backup_and_permissions(
+            stow::execute_plan_interactive(
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -408,6 +410,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&common.target_path()),
                 Some(&resolved.permissions),
                 common.adopt,
+                common.interactive,
             )?;
             enstow::hook::run_post_apply_hooks(&resolved)?;
         }

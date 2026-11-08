@@ -98,6 +98,7 @@ fn get_passphrase_for_decrypt(path: &Path) -> Result<SecretString, EnstowError> 
 pub enum SecretType {
     Age,
     Sops,
+    Template,
 }
 
 pub fn detect_secret_type(path: &Path) -> Option<SecretType> {
@@ -106,6 +107,8 @@ pub fn detect_secret_type(path: &Path) -> Option<SecretType> {
         Some(SecretType::Age)
     } else if name.contains(".sops.") || name == ".sops.yaml" {
         Some(SecretType::Sops)
+    } else if name.ends_with(".tmpl") {
+        Some(SecretType::Template)
     } else {
         None
     }
@@ -114,6 +117,8 @@ pub fn detect_secret_type(path: &Path) -> Option<SecretType> {
 pub fn target_plaintext_name(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     if let Some(stripped) = name.strip_suffix(".age") {
+        Some(stripped.to_string())
+    } else if let Some(stripped) = name.strip_suffix(".tmpl") {
         Some(stripped.to_string())
     } else if let Some(stripped) = name.strip_suffix(".sops.yaml") {
         Some(format!("{stripped}.yaml"))
@@ -132,7 +137,252 @@ pub fn decrypt_to_memory(
     match secret_type {
         SecretType::Age => decrypt_age(path, age_key_file),
         SecretType::Sops => decrypt_sops(path),
+        SecretType::Template => render_template_file(path, age_key_file),
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TemplateContext {
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+    pub profile: String,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub secrets: std::collections::BTreeMap<String, String>,
+}
+
+pub fn render_template(template: &str, ctx: &TemplateContext) -> Result<String, EnstowError> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + 2..];
+        let Some(end) = after_open.find("}}") else {
+            return Err(EnstowError::Config(
+                "Unclosed template expression '{{'".into(),
+            ));
+        };
+
+        let expr = after_open[..end].trim();
+        let val = match expr {
+            "os" => ctx.os.as_str(),
+            "arch" => ctx.arch.as_str(),
+            "hostname" => ctx.hostname.as_str(),
+            "profile" => ctx.profile.as_str(),
+            _ if expr.starts_with("env.") => {
+                let key = expr["env.".len()..].trim();
+                ctx.env.get(key).map(String::as_str).ok_or_else(|| {
+                    EnstowError::Config(format!(
+                        "Undefined environment variable '{key}' in template"
+                    ))
+                })?
+            }
+            _ if expr.starts_with("secrets.") => {
+                let key = expr["secrets.".len()..].trim();
+                ctx.secrets.get(key).map(String::as_str).ok_or_else(|| {
+                    EnstowError::Config(format!("Undefined secret '{key}' in template"))
+                })?
+            }
+            _ => {
+                return Err(EnstowError::Config(format!(
+                    "Unknown template variable '{expr}'"
+                )))
+            }
+        };
+
+        out.push_str(val);
+        rest = &after_open[end + 2..];
+    }
+
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn insert_secret_kv(
+    map: &mut std::collections::BTreeMap<String, String>,
+    stem: &str,
+    key: String,
+    val: String,
+) {
+    if !stem.is_empty() && stem != "secrets" {
+        map.insert(format!("{stem}.{key}"), val.clone());
+    }
+    map.insert(key, val);
+}
+
+fn flatten_json_value(
+    prefix: &str,
+    stem: &str,
+    val: &serde_json::Value,
+    map: &mut std::collections::BTreeMap<String, String>,
+) {
+    match val {
+        serde_json::Value::Object(obj) => {
+            for (k, v) in obj {
+                let next = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                flatten_json_value(&next, stem, v, map);
+            }
+        }
+        serde_json::Value::String(s) => insert_secret_kv(map, stem, prefix.to_string(), s.clone()),
+        serde_json::Value::Number(n) => {
+            insert_secret_kv(map, stem, prefix.to_string(), n.to_string())
+        }
+        serde_json::Value::Bool(b) => {
+            insert_secret_kv(map, stem, prefix.to_string(), b.to_string())
+        }
+        _ => {}
+    }
+}
+
+fn parse_secret_kv_text(
+    file_name: &str,
+    text: &str,
+    map: &mut std::collections::BTreeMap<String, String>,
+) {
+    let base = file_name
+        .strip_suffix(".age")
+        .unwrap_or(file_name)
+        .replace(".sops.", ".");
+    let stem = base
+        .trim_start_matches('.')
+        .strip_suffix(".env")
+        .or_else(|| base.trim_start_matches('.').strip_suffix(".toml"))
+        .or_else(|| base.trim_start_matches('.').strip_suffix(".yaml"))
+        .or_else(|| base.trim_start_matches('.').strip_suffix(".yml"))
+        .or_else(|| base.trim_start_matches('.').strip_suffix(".json"))
+        .unwrap_or_else(|| base.trim_start_matches('.'))
+        .trim_start_matches("secrets.");
+
+    if base.ends_with(".json") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            flatten_json_value("", stem, &v, map);
+            return;
+        }
+    } else if base.ends_with(".toml") {
+        if let Ok(t) = toml::from_str::<toml::Value>(text) {
+            if let Ok(v) = serde_json::to_value(t) {
+                flatten_json_value("", stem, &v, map);
+                return;
+            }
+        }
+    } else if base.ends_with(".yaml") || base.ends_with(".yml") {
+        if let Ok(y) = serde_yaml_ng::from_str::<serde_json::Value>(text) {
+            flatten_json_value("", stem, &y, map);
+            return;
+        }
+    }
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let stripped = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim();
+        if let Some((k, v)) = stripped.split_once('=') {
+            let key = k.trim().to_string();
+            let raw_val = v.trim();
+            let val = raw_val
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| {
+                    raw_val
+                        .strip_prefix('\'')
+                        .and_then(|s| s.strip_suffix('\''))
+                })
+                .unwrap_or(raw_val)
+                .to_string();
+            if !key.is_empty() {
+                insert_secret_kv(map, stem, key, val);
+            }
+        }
+    }
+}
+
+fn load_secret_stores_for_template(
+    tmpl_path: &Path,
+    age_key_file: Option<&Path>,
+) -> Result<std::collections::BTreeMap<String, String>, EnstowError> {
+    let mut dirs = Vec::new();
+    let mut cur = tmpl_path.parent();
+    for _ in 0..3 {
+        if let Some(d) = cur {
+            dirs.push(d.to_path_buf());
+            cur = d.parent();
+        } else {
+            break;
+        }
+    }
+    dirs.reverse();
+
+    let mut secrets = std::collections::BTreeMap::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file())
+            .collect();
+        paths.sort();
+
+        for path in paths {
+            match detect_secret_type(&path) {
+                Some(SecretType::Age) | Some(SecretType::Sops) => {
+                    let st = detect_secret_type(&path).unwrap();
+                    let mut decrypted = decrypt_to_memory(&path, st, age_key_file)?;
+                    if let Ok(mut text) = String::from_utf8(decrypted.clone()) {
+                        let fname = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default();
+                        parse_secret_kv_text(fname, &text, &mut secrets);
+                        text.zeroize();
+                    }
+                    decrypted.zeroize();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(secrets)
+}
+
+pub fn render_template_file(
+    path: &Path,
+    age_key_file: Option<&Path>,
+) -> Result<Vec<u8>, EnstowError> {
+    let template = std::fs::read_to_string(path).map_err(|e| EnstowError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let host = crate::config::HostInfo::current();
+    let secrets = if template.contains("secrets.") {
+        load_secret_stores_for_template(path, age_key_file)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
+
+    let ctx = TemplateContext {
+        os: host.os,
+        arch: host.arch,
+        hostname: host.hostname,
+        profile: crate::config::get_active_profile().unwrap_or_default(),
+        env: std::env::vars().collect(),
+        secrets,
+    };
+
+    let rendered = render_template(&template, &ctx).map_err(|e| EnstowError::Decryption {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    Ok(rendered.into_bytes())
 }
 
 pub fn decrypt_age(path: &Path, age_key_file: Option<&Path>) -> Result<Vec<u8>, EnstowError> {

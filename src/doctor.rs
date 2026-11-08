@@ -429,6 +429,30 @@ fn check_decryption_prerequisites(args: &CommonArgs, actions: &[FileAction]) -> 
                         }
                     }
                 }
+                Some(SecretType::Template) => {
+                    match crypto::decrypt_to_memory(source, SecretType::Template, explicit_key) {
+                        Ok(_) => {
+                            checks.push(DoctorCheck {
+                                category: "decryption_prerequisites".into(),
+                                severity: CheckSeverity::Ok,
+                                message: format!("Template renderable: {}", source.display()),
+                                path: Some(source.clone()),
+                            });
+                        }
+                        Err(e) => {
+                            checks.push(DoctorCheck {
+                                category: "decryption_prerequisites".into(),
+                                severity: CheckSeverity::Error,
+                                message: format!(
+                                    "Cannot render template '{}': {}",
+                                    source.display(),
+                                    e
+                                ),
+                                path: Some(source.clone()),
+                            });
+                        }
+                    }
+                }
                 None => {}
             }
         }

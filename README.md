@@ -196,12 +196,16 @@ States reported:
 When a target destination already exists with different content or unmanaged files:
 
 - **Dry-run (`-n`, `--dry-run`):** Previews what actions would occur without touching disk.
+- **Interactive (`-I`, `--interactive`):** Prompts on each collision or secret drift with `[d]iff`, `[o]verwrite`, `[a]dopt`, or `[s]kip`.
 - **Adopt (`--adopt`):** Copies conflicting target files into the source package (overwriting source) and re-links.
 - **Force (`-f`, `--force`):** Overwrites conflicting target files or replaces differing symlinks.
 - **Backup (`-b`, `--backup`):** Relocates colliding destination files out of the way before creating the new link or secret.
 - **Backup Directory (`--backup-dir <path>`):** Sets custom destination for backups (defaults to `$TARGET/.enstow-backup`).
 
 ```bash
+# Interactively resolve collisions and secret drift file-by-file
+enstow apply -I zsh
+
 # Safely apply with backup
 enstow apply -b --backup-dir ~/backup-dir zsh
 
@@ -372,6 +376,43 @@ Hooks can be bypassed on demand:
 # Bypass lifecycle hook execution
 enstow apply --no-hooks
 ```
+
+### Platform & Host Condition Filters
+
+Target multiple operating systems, CPU architectures, and hostnames in a single configuration without duplicating profiles:
+
+```toml
+[package.macos-defaults]
+os = "macos"
+
+[package.linux-desktop]
+os = ["linux", "freebsd"]
+arch = "x86_64"
+hostname = ["workstation", "laptop"]
+```
+
+Non-matching packages are automatically skipped during `apply`, `restow`, `unstow`, and `status`.
+
+### Template Rendering & Secret Substitution (`.tmpl`)
+
+Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in memory and written to the target directory with `0600` (or custom configured) permissions:
+
+```ini
+# In git/.gitconfig.tmpl
+[user]
+    name = {{ env.GIT_AUTHOR_NAME }}
+    signingkey = {{ secrets.GPG_KEY }}
+[github]
+    token = {{ secrets.github.token }}
+[host]
+    os = {{ os }}
+    arch = {{ arch }}
+    hostname = {{ hostname }}
+    profile = {{ profile }}
+```
+
+- **Contextual Variables:** `{{ os }}`, `{{ arch }}`, `{{ hostname }}`, `{{ profile }}`, and `{{ env.VAR }}`.
+- **Encrypted Key-Value Secret Stores:** Reference `{{ secrets.KEY }}` or `{{ secrets.<store>.KEY }}` from `.age` / `.sops.*` files (`.env`, `.toml`, `.yaml`, `.json`) in the package or repository root. Hidden secret stores named `.secrets.age` or `.secrets.*.age` are automatically excluded from direct file deployment.
 
 ---
 

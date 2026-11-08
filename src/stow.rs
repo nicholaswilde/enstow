@@ -286,7 +286,11 @@ pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     })?;
 
     let pkg_roots = if args.packages.is_empty() {
-        vec![source_root]
+        if args.ignore.iter().any(|p| p == "*") {
+            Vec::new()
+        } else {
+            vec![source_root]
+        }
     } else {
         let mut roots = Vec::new();
         for pkg in &args.packages {
@@ -463,6 +467,77 @@ pub fn execute_plan_with_backup(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictResolution {
+    Overwrite,
+    Adopt,
+    Skip,
+}
+
+pub fn prompt_conflict_resolution<R: std::io::BufRead, W: std::io::Write>(
+    action: &FileAction,
+    age_key_file: Option<&Path>,
+    reader: &mut R,
+    writer: &mut W,
+    colorize: bool,
+) -> Result<ConflictResolution, EnstowError> {
+    loop {
+        write!(
+            writer,
+            "Conflict detected for {}: [d]iff, [o]verwrite, [a]dopt, [s]kip: ",
+            action.target().display()
+        )
+        .map_err(|e| EnstowError::Io {
+            path: action.target().to_path_buf(),
+            source: e,
+        })?;
+        writer.flush().map_err(|e| EnstowError::Io {
+            path: action.target().to_path_buf(),
+            source: e,
+        })?;
+
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line).map_err(|e| EnstowError::Io {
+            path: action.target().to_path_buf(),
+            source: e,
+        })?;
+        if bytes_read == 0 {
+            return Ok(ConflictResolution::Skip);
+        }
+
+        match line.trim().to_ascii_lowercase().as_str() {
+            "d" | "diff" => {
+                let diffs =
+                    crate::diff::compute_diff(std::slice::from_ref(action), age_key_file, false)?;
+                for file_diff in &diffs {
+                    let text = if colorize {
+                        crate::diff::colorize_diff(&file_diff.diff)
+                    } else {
+                        file_diff.diff.clone()
+                    };
+                    write!(writer, "{text}").map_err(|e| EnstowError::Io {
+                        path: action.target().to_path_buf(),
+                        source: e,
+                    })?;
+                }
+            }
+            "o" | "overwrite" => return Ok(ConflictResolution::Overwrite),
+            "a" | "adopt" => return Ok(ConflictResolution::Adopt),
+            "s" | "skip" => return Ok(ConflictResolution::Skip),
+            _ => {
+                writeln!(
+                    writer,
+                    "Invalid choice. Please enter 'd' (diff), 'o' (overwrite), 'a' (adopt), or 's' (skip)."
+                )
+                .map_err(|e| EnstowError::Io {
+                    path: action.target().to_path_buf(),
+                    source: e,
+                })?;
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn execute_plan_with_backup_and_permissions(
     actions: &[FileAction],
@@ -475,6 +550,71 @@ pub fn execute_plan_with_backup_and_permissions(
     permissions: Option<&crate::config::PermissionsConfig>,
     adopt: bool,
 ) -> Result<(), EnstowError> {
+    execute_plan_interactive(
+        actions,
+        dry_run,
+        age_key_file,
+        force,
+        backup,
+        backup_dir,
+        target_root,
+        permissions,
+        adopt,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_plan_interactive(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+    force: bool,
+    backup: bool,
+    backup_dir: Option<&Path>,
+    target_root: Option<&Path>,
+    permissions: Option<&crate::config::PermissionsConfig>,
+    adopt: bool,
+    interactive: bool,
+) -> Result<(), EnstowError> {
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let mut writer = std::io::stderr();
+    let colorize = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
+    execute_plan_interactive_with_io(
+        actions,
+        dry_run,
+        age_key_file,
+        force,
+        backup,
+        backup_dir,
+        target_root,
+        permissions,
+        adopt,
+        interactive,
+        &mut reader,
+        &mut writer,
+        colorize,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+    force: bool,
+    backup: bool,
+    backup_dir: Option<&Path>,
+    target_root: Option<&Path>,
+    permissions: Option<&crate::config::PermissionsConfig>,
+    adopt: bool,
+    interactive: bool,
+    reader: &mut R,
+    writer: &mut W,
+    colorize: bool,
+) -> Result<(), EnstowError> {
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
@@ -482,14 +622,31 @@ pub fn execute_plan_with_backup_and_permissions(
                     continue;
                 }
 
+                let mut file_force = force;
+                let mut file_adopt = adopt;
+
                 if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if !force && !backup && !adopt {
-                        return Err(EnstowError::Collision {
-                            path: target.to_path_buf(),
-                        });
+                    if !file_force && !backup && !file_adopt {
+                        if interactive {
+                            match prompt_conflict_resolution(
+                                action,
+                                age_key_file,
+                                reader,
+                                writer,
+                                colorize,
+                            )? {
+                                ConflictResolution::Overwrite => file_force = true,
+                                ConflictResolution::Adopt => file_adopt = true,
+                                ConflictResolution::Skip => continue,
+                            }
+                        } else {
+                            return Err(EnstowError::Collision {
+                                path: target.to_path_buf(),
+                            });
+                        }
                     }
 
-                    if adopt {
+                    if file_adopt {
                         if dry_run {
                             println!(
                                 "[dry-run] ADOPT {} -> {}",
@@ -548,7 +705,7 @@ pub fn execute_plan_with_backup_and_permissions(
                         if let Some(dest) = &backup_dest {
                             backup_file(target, dest)?;
                         }
-                    } else if force {
+                    } else if file_force {
                         remove_target(target, &meta)?;
                     }
                 } else if dry_run {
@@ -560,21 +717,54 @@ pub fn execute_plan_with_backup_and_permissions(
                     continue;
                 }
 
-                create_symlink(source, target, force)?;
+                create_symlink(source, target, file_force)?;
             }
             FileAction::Decrypt { source, target } => {
                 let mode = permissions
                     .map(|p| p.resolve_mode(target, Some(source), target_root))
                     .unwrap_or(0o600);
-                let target_exists = std::fs::symlink_metadata(target).is_ok();
-                if target_exists {
-                    if !force && !backup && !adopt {
-                        return Err(EnstowError::Collision {
-                            path: target.to_path_buf(),
-                        });
+                let mut file_force = force;
+                let mut file_adopt = adopt;
+
+                if let Ok(meta) = std::fs::symlink_metadata(target) {
+                    if !file_force && !backup && !file_adopt {
+                        if interactive {
+                            if !meta.file_type().is_symlink() && !meta.is_dir() {
+                                if let Some(secret_type) = detect_secret_type(source) {
+                                    if let (Ok(decrypted), Ok(existing)) = (
+                                        crate::crypto::decrypt_to_memory(
+                                            source,
+                                            secret_type,
+                                            age_key_file,
+                                        ),
+                                        std::fs::read(target),
+                                    ) {
+                                        if existing == decrypted {
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+
+                            match prompt_conflict_resolution(
+                                action,
+                                age_key_file,
+                                reader,
+                                writer,
+                                colorize,
+                            )? {
+                                ConflictResolution::Overwrite => file_force = true,
+                                ConflictResolution::Adopt => file_adopt = true,
+                                ConflictResolution::Skip => continue,
+                            }
+                        } else {
+                            return Err(EnstowError::Collision {
+                                path: target.to_path_buf(),
+                            });
+                        }
                     }
 
-                    if adopt {
+                    if file_adopt {
                         if dry_run {
                             println!(
                                 "[dry-run] ADOPT {} -> {}",
@@ -630,10 +820,8 @@ pub fn execute_plan_with_backup_and_permissions(
                         if let Some(dest) = &backup_dest {
                             backup_file(target, dest)?;
                         }
-                    } else if force {
-                        if let Ok(meta) = std::fs::symlink_metadata(target) {
-                            remove_target(target, &meta)?;
-                        }
+                    } else if file_force {
+                        remove_target(target, &meta)?;
                     }
                 } else if dry_run {
                     println!(
@@ -651,7 +839,7 @@ pub fn execute_plan_with_backup_and_permissions(
                 })?;
                 let plaintext =
                     crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
-                crate::crypto::write_secure_file_with_mode(target, &plaintext, force, mode)?;
+                crate::crypto::write_secure_file_with_mode(target, &plaintext, file_force, mode)?;
             }
         }
     }
@@ -823,6 +1011,9 @@ const DEFAULT_IGNORES: &[&str] = &[
     "Cargo.lock",
     ".enstowignore",
     ".stow-local-ignore",
+    ".secrets.age",
+    ".secrets.*.age",
+    ".enstow-secrets*",
 ];
 
 fn build_gitignore(pkg_root: &Path, source_root: &Path, extra_patterns: &[String]) -> Gitignore {

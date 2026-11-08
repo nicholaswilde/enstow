@@ -96,13 +96,120 @@ pub fn parse_mode_int(n: u32) -> Result<u32> {
     }
 }
 
+/// Host environment metadata used to evaluate package condition filters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostInfo {
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+}
+
+impl HostInfo {
+    /// Detect current host platform, architecture, and hostname.
+    pub fn current() -> Self {
+        Self {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            hostname: detect_hostname(),
+        }
+    }
+}
+
+pub fn detect_hostname() -> String {
+    for var in ["ENSTOW_HOSTNAME", "HOSTNAME", "COMPUTERNAME"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    if let Ok(val) = fs::read_to_string("/etc/hostname") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            if let Ok(s) = String::from_utf8(output.stdout) {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    String::new()
+}
+
+fn matches_os_filter(filter: &str, host_os: &str) -> bool {
+    filter.eq_ignore_ascii_case(host_os)
+        || (host_os.eq_ignore_ascii_case("macos") && filter.eq_ignore_ascii_case("darwin"))
+        || (host_os.eq_ignore_ascii_case("darwin") && filter.eq_ignore_ascii_case("macos"))
+}
+
+fn matches_arch_filter(filter: &str, host_arch: &str) -> bool {
+    filter.eq_ignore_ascii_case(host_arch)
+        || (host_arch.eq_ignore_ascii_case("aarch64") && filter.eq_ignore_ascii_case("arm64"))
+        || (host_arch.eq_ignore_ascii_case("arm64") && filter.eq_ignore_ascii_case("aarch64"))
+        || (host_arch.eq_ignore_ascii_case("x86_64") && filter.eq_ignore_ascii_case("amd64"))
+        || (host_arch.eq_ignore_ascii_case("amd64") && filter.eq_ignore_ascii_case("x86_64"))
+}
+
+fn matches_hostname_filter(filter: &str, host_name: &str) -> bool {
+    if filter.is_empty() || host_name.is_empty() {
+        return false;
+    }
+    if filter.eq_ignore_ascii_case(host_name) {
+        return true;
+    }
+    if !filter.contains('.') {
+        if let Some(short) = host_name.split('.').next() {
+            return filter.eq_ignore_ascii_case(short);
+        }
+    }
+    false
+}
+
 /// Configuration for a specific dotfile package.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PackageConfig {
+    #[serde(default, deserialize_with = "deserialize_hook_commands")]
+    pub os: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_hook_commands")]
+    pub arch: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_hook_commands")]
+    pub hostname: Vec<String>,
     #[serde(default)]
     pub permissions: BTreeMap<String, PermissionMode>,
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
+}
+
+impl PackageConfig {
+    /// Evaluate whether this package's platform and host conditions match the given host.
+    pub fn matches_host(&self, host: &HostInfo) -> bool {
+        let os_ok = self.os.is_empty()
+            || self
+                .os
+                .iter()
+                .any(|o| matches_os_filter(o.trim(), host.os.trim()));
+        let arch_ok = self.arch.is_empty()
+            || self
+                .arch
+                .iter()
+                .any(|a| matches_arch_filter(a.trim(), host.arch.trim()));
+        let host_ok = self.hostname.is_empty()
+            || self
+                .hostname
+                .iter()
+                .any(|h| matches_hostname_filter(h.trim(), host.hostname.trim()));
+        os_ok && arch_ok && host_ok
+    }
 }
 
 /// Lifecycle hooks configuration.
@@ -191,6 +298,7 @@ pub struct ConfigFile {
     pub force: Option<bool>,
     pub prune: Option<bool>,
     pub adopt: Option<bool>,
+    pub interactive: Option<bool>,
     pub age_key_file: Option<PathBuf>,
     pub recipients: Option<RecipientsConfig>,
     pub packages: Option<Vec<String>>,
@@ -445,6 +553,7 @@ pub struct ResolvedCommonArgs {
     pub backup_dir: PathBuf,
     pub permissions: PermissionsConfig,
     pub adopt: bool,
+    pub interactive: bool,
     pub no_hooks: bool,
     pub hooks: ResolvedHooks,
     pub shred: bool,
@@ -465,29 +574,21 @@ impl ResolvedCommonArgs {
             backup: self.backup,
             backup_dir: Some(self.backup_dir.clone()),
             adopt: self.adopt,
+            interactive: self.interactive,
             no_hooks: self.no_hooks,
             shred: self.shred,
         }
     }
 }
 
-/// Resolve dotfile packages across explicit CLI packages, profile selection,
-/// ENSTOW_PACKAGES environment variable, config default profile, and config packages.
-///
-/// Precedence:
-/// 1. Explicit CLI packages (if non-empty)
-/// 2. Profile selection via `--profile` or `ENSTOW_PROFILE`
-/// 3. `ENSTOW_PACKAGES` environment variable
-/// 4. Config default (`default_profile`, then `config.packages`)
-/// 5. Empty vec (stows all packages in source root)
-pub fn resolve_packages(
+fn resolve_raw_packages(
     cli_packages: &[String],
     cli_profile: Option<&str>,
     config: Option<&ConfigFile>,
-) -> Result<Vec<String>> {
+) -> Result<Option<Vec<String>>> {
     // 1. Explicit CLI packages (if non-empty)
     if !cli_packages.is_empty() {
-        return Ok(cli_packages.to_vec());
+        return Ok(Some(cli_packages.to_vec()));
     }
 
     // 2. Profile selection via --profile or ENSTOW_PROFILE
@@ -507,7 +608,7 @@ pub fn resolve_packages(
             .and_then(|c| c.profiles.as_ref())
             .and_then(|p| p.get(&name))
         {
-            return Ok(profile.packages.clone());
+            return Ok(Some(profile.packages.clone()));
         }
 
         let available = config
@@ -528,11 +629,13 @@ pub fn resolve_packages(
     // 3. ENSTOW_PACKAGES environment variable
     if let Ok(pkg_env) = std::env::var("ENSTOW_PACKAGES") {
         if !pkg_env.trim().is_empty() {
-            return Ok(pkg_env
-                .split([',', ' '])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect());
+            return Ok(Some(
+                pkg_env
+                    .split([',', ' '])
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            ));
         }
     }
 
@@ -546,7 +649,7 @@ pub fn resolve_packages(
             .and_then(|c| c.profiles.as_ref())
             .and_then(|p| p.get(def_profile))
         {
-            return Ok(profile.packages.clone());
+            return Ok(Some(profile.packages.clone()));
         }
 
         let available = config
@@ -565,11 +668,71 @@ pub fn resolve_packages(
     }
 
     if let Some(pkgs) = config.and_then(|c| c.packages.clone()) {
-        return Ok(pkgs);
+        return Ok(Some(pkgs));
     }
 
-    // 5. Default: empty vec (all packages in source root)
-    Ok(Vec::new())
+    // 5. Default: None (all packages in source root)
+    Ok(None)
+}
+
+/// Evaluate whether a named package is enabled for the given host according to `[package.<name>]` rules.
+pub fn is_package_enabled(pkg_name: &str, config: Option<&ConfigFile>, host: &HostInfo) -> bool {
+    config
+        .and_then(|c| c.package.as_ref())
+        .and_then(|pkgs| pkgs.get(pkg_name))
+        .map(|pkg_cfg| pkg_cfg.matches_host(host))
+        .unwrap_or(true)
+}
+
+/// Resolve dotfile packages filtered against a specific `HostInfo`.
+pub fn resolve_packages_for_host(
+    cli_packages: &[String],
+    cli_profile: Option<&str>,
+    config: Option<&ConfigFile>,
+    host: &HostInfo,
+) -> Result<Vec<String>> {
+    let raw = resolve_raw_packages(cli_packages, cli_profile, config)?;
+    Ok(raw
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|pkg| is_package_enabled(pkg, config, host))
+        .collect())
+}
+
+/// Resolve dotfile packages across explicit CLI packages, profile selection,
+/// ENSTOW_PACKAGES environment variable, config default profile, and config packages,
+/// filtered by `[package.<name>]` platform and host conditions.
+///
+/// Precedence:
+/// 1. Explicit CLI packages (if non-empty)
+/// 2. Profile selection via `--profile` or `ENSTOW_PROFILE`
+/// 3. `ENSTOW_PACKAGES` environment variable
+/// 4. Config default (`default_profile`, then `config.packages`)
+/// 5. Empty vec (stows all packages in source root)
+pub fn resolve_packages(
+    cli_packages: &[String],
+    cli_profile: Option<&str>,
+    config: Option<&ConfigFile>,
+) -> Result<Vec<String>> {
+    resolve_packages_for_host(cli_packages, cli_profile, config, &HostInfo::current())
+}
+
+static ACTIVE_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_active_profile(profile: Option<String>) {
+    if let Ok(mut lock) = ACTIVE_PROFILE.lock() {
+        *lock = profile;
+    }
+}
+
+pub fn get_active_profile() -> Option<String> {
+    if let Ok(env_prof) = std::env::var("ENSTOW_PROFILE") {
+        let trimmed = env_prof.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    ACTIVE_PROFILE.lock().ok().and_then(|g| g.clone())
 }
 
 /// Resolve the active profile name, if any, across CLI flag, ENSTOW_PROFILE, and config default_profile.
@@ -657,11 +820,34 @@ pub fn resolve_common_args(
     let age_key_file = resolve_age_key_file(cli_args.age_key_file.as_deref(), config);
 
     // 4. Packages and profile precedence
-    let packages = resolve_packages(&cli_args.packages, cli_args.profile.as_deref(), config)?;
+    let host = HostInfo::current();
+    let raw_packages =
+        resolve_raw_packages(&cli_args.packages, cli_args.profile.as_deref(), config)?;
+    let had_configured_packages = raw_packages.as_ref().is_some_and(|p| !p.is_empty());
+    let packages: Vec<String> = raw_packages
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|pkg| is_package_enabled(pkg, config, &host))
+        .collect();
     let profile = resolve_profile(cli_args.profile.as_deref(), config);
+    set_active_profile(profile.clone());
 
     // 5. Additional ignore patterns: from CLI, ENSTOW_IGNORE, and Config
-    let ignore = resolve_ignore_patterns(&cli_args.ignore, config);
+    let mut ignore = resolve_ignore_patterns(&cli_args.ignore, config);
+    if had_configured_packages && packages.is_empty() && !ignore.iter().any(|p| p == "*") {
+        ignore.push("*".to_string());
+    } else if !had_configured_packages {
+        if let Some(pkg_map) = config.and_then(|c| c.package.as_ref()) {
+            for (pkg_name, pkg_cfg) in pkg_map {
+                if !pkg_cfg.matches_host(&host) {
+                    let pat = format!("/{pkg_name}");
+                    if !ignore.contains(&pat) {
+                        ignore.push(pat);
+                    }
+                }
+            }
+        }
+    }
 
     // 6. Dry run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
     let dry_run = resolve_dry_run(cli_args.dry_run, config);
@@ -743,6 +929,15 @@ pub fn resolve_common_args(
         config.and_then(|c| c.shred).unwrap_or_default()
     };
 
+    // 16. Interactive precedence: CLI (-I / --interactive) > ENSTOW_INTERACTIVE > Config > Default (false)
+    let interactive = if cli_args.interactive {
+        true
+    } else if let Some(env_interactive) = parse_bool_env("ENSTOW_INTERACTIVE") {
+        env_interactive
+    } else {
+        config.and_then(|c| c.interactive).unwrap_or_default()
+    };
+
     Ok(ResolvedCommonArgs {
         source,
         target,
@@ -757,6 +952,7 @@ pub fn resolve_common_args(
         backup_dir,
         permissions,
         adopt,
+        interactive,
         no_hooks,
         hooks,
         shred,

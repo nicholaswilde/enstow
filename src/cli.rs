@@ -80,6 +80,10 @@ pub struct CommonArgs {
     #[arg(long)]
     pub adopt: bool,
 
+    /// Interactively resolve target file collisions and local drift
+    #[arg(short = 'I', long, env = "ENSTOW_INTERACTIVE")]
+    pub interactive: bool,
+
     /// Explicit path to age identity key file
     #[arg(long, env = "ENSTOW_AGE_KEY_FILE")]
     pub age_key_file: Option<PathBuf>,

@@ -418,6 +418,7 @@ mod tests {
             backup_dir: PathBuf::from("/tmp/backup"),
             permissions: crate::config::PermissionsConfig::default(),
             adopt: false,
+            interactive: false,
             no_hooks,
             hooks: ResolvedHooks { global, packages },
             shred: false,
