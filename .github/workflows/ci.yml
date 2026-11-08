@@ -120,9 +120,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Run rumdl linter
-        uses: rvben/rumdl@v0
-        with:
-          version: "0.3.2"
+        run: pipx run rumdl check .
 
   coveralls:
     runs-on: ubuntu-latest
