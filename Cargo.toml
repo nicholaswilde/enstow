@@ -37,3 +37,43 @@ strip = true
 inherits = "dev"
 incremental = false
 debug = 0
+
+[package.metadata.deb]
+maintainer = "Nicholas Wilde <ncwilde43@gmail.com>"
+copyright = "2026 Nicholas Wilde"
+license-file = ["LICENSE", "4"]
+extended-description = "A secret-aware dotfile manager combining stow symlinking with sops and age decryption."
+section = "utils"
+priority = "optional"
+assets = [
+  [
+    "target/release/enstow",
+    "usr/bin/",
+    "755",
+  ],
+  [
+    "assets/enstow.1",
+    "usr/share/man/man1/",
+    "644",
+  ],
+  [
+    "completions/enstow.bash",
+    "usr/share/bash-completion/completions/enstow",
+    "644",
+  ],
+  [
+    "completions/_enstow",
+    "usr/share/zsh/vendor-completions/_enstow",
+    "644",
+  ],
+  [
+    "completions/enstow.fish",
+    "usr/share/fish/vendor_completions.d/enstow.fish",
+    "644",
+  ],
+  [
+    "README.md",
+    "usr/share/doc/enstow/README.md",
+    "644",
+  ],
+]
