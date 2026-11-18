@@ -99,6 +99,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `edit` | Interactively decrypt, edit in `$EDITOR`, and re-encrypt an age secret file | `enstow edit <file.age>` |
 | `completions` | Output dynamic or static shell completion script (`bash`, `zsh`, `fish`, `powershell`, `elvish`) | `enstow completions zsh [--static]` |
 | `man` | Output UNIX roff man page | `enstow man > assets/enstow.1` |
+| `self-update` | Update enstow to the latest or specified GitHub release (alias: `update`) | `enstow self-update [--check] [--yes]` |
 
 ### Bootstrapping a New Machine (`enstow init`)
 
@@ -439,6 +440,27 @@ Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in
 - **Contextual Variables:** `{{ os }}`, `{{ arch }}`, `{{ hostname }}`, `{{ profile }}`, and `{{ env.VAR }}`.
 - **Encrypted Key-Value Secret Stores:** Reference `{{ secrets.KEY }}` or `{{ secrets.<store>.KEY }}` from `.age` / `.sops.*` files (`.env`, `.toml`, `.yaml`, `.json`) in the package or repository root. Hidden secret stores named `.secrets.age` or `.secrets.*.age` are automatically excluded from direct file deployment.
 
+### Self-Updating (`enstow self-update`)
+
+Update `enstow` in-place from GitHub Releases (also aliased as `enstow update`):
+
+```bash
+# Check if a newer release is available without modifying the binary
+enstow self-update --check
+
+# Download and install the latest release without prompting
+enstow self-update --yes
+
+# Install a specific release version
+enstow self-update --version 0.1.13
+
+# Pass a GitHub token to raise the API rate limit (60/hr -> 5,000/hr)
+GH_TOKEN=ghp_... enstow self-update
+```
+
+> [!TIP]
+> `enstow self-update` checks `GH_TOKEN`, then `GITHUB_TOKEN` (in order of precedence) to authenticate GitHub API requests and avoid unauthenticated IP rate limits.
+
 ---
 
 ## :books: Shell Completions
@@ -659,6 +681,7 @@ log_level: info
 | `ENSTOW_EDITOR` / `VISUAL` / `EDITOR` | `editor` | `--editor` | Editor command for interactive secret editing (`enstow edit`) | `nano` |
 | `ENSTOW_JSON` | `json` | `--json` | Emit status output in JSON format (`true`/`false`) | `false` |
 | `ENSTOW_LOG_LEVEL` | `log_level` | `--log-level` | Log filter level (`trace`, `debug`, `info`, `warn`, `error`, `off`) | `info` |
+| `GH_TOKEN` / `GITHUB_TOKEN` | N/A | N/A | GitHub token for `enstow self-update` to bypass unauthenticated API rate limits (60/hr -> 5,000/hr; `GH_TOKEN` takes precedence) | None |
 
 ---
 
