@@ -409,6 +409,25 @@ fn main() -> anyhow::Result<()> {
                 enstow::cli::generate_completions(shell, &mut stdout);
             }
         }
+        Some(Commands::SelfUpdate(args)) => {
+            let outcome = enstow::update::run_self_update(&args, &log_level)?;
+            if !enstow::update::is_quiet_log_level(&log_level) {
+                match outcome {
+                    enstow::update::UpdateOutcome::UpToDate { current } => {
+                        println!("enstow is already up to date (v{current})");
+                    }
+                    enstow::update::UpdateOutcome::UpdateAvailable { current, latest } => {
+                        println!("Update available: v{current} -> v{latest}");
+                    }
+                    enstow::update::UpdateOutcome::Updated { from, to } => {
+                        println!("Updated enstow from v{from} to v{to}");
+                    }
+                    enstow::update::UpdateOutcome::Cancelled { .. } => {
+                        println!("Update cancelled.");
+                    }
+                }
+            }
+        }
         None => {
             // Default to applying with root common args
             let resolved = enstow::config::resolve_common_args(&cli.common, config.as_ref())?;

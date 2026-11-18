@@ -33,4 +33,5 @@ fn test_generate_manpage_renders_roff() {
     assert!(man_str.contains("diff"));
     assert!(man_str.contains("man"));
     assert!(man_str.contains("completions"));
+    assert!(man_str.contains("self\\-update"));
 }

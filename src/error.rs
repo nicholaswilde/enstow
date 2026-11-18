@@ -26,6 +26,9 @@ pub enum EnstowError {
         command: String,
         status: String,
     },
+
+    #[error("Self-update failed: {0}")]
+    Update(String),
 }
 
 #[cfg(test)]

@@ -201,6 +201,21 @@ pub struct InitArgs {
     pub shred: bool,
 }
 
+#[derive(Args, Debug, Clone, PartialEq, Eq, Default)]
+pub struct SelfUpdateArgs {
+    /// Update to a specific release version (e.g. 0.1.12 or v0.1.12)
+    #[arg(long, value_name = "VERSION")]
+    pub version: Option<String>,
+
+    /// Check for available updates without replacing the binary
+    #[arg(long, short = 'n', alias = "dry-run")]
+    pub check: bool,
+
+    /// Skip interactive confirmation prompt
+    #[arg(short = 'y', long, alias = "no-confirm")]
+    pub yes: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Bootstrap dotfile repository onboarding: clone, detect host/profile, check keys, and apply
@@ -374,6 +389,9 @@ pub enum Commands {
         #[arg(long = "static")]
         static_completions: bool,
     },
+    /// Update enstow to the latest or specified GitHub release
+    #[command(name = "self-update", visible_alias = "update")]
+    SelfUpdate(SelfUpdateArgs),
 }
 
 pub fn default_target_dir() -> PathBuf {
@@ -623,6 +641,40 @@ mod tests {
         // man
         let cli = Cli::try_parse_from(["enstow", "man"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Man)));
+
+        // self-update & update alias
+        let cli = Cli::try_parse_from(["enstow", "self-update"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfUpdate(args)) => {
+                assert_eq!(args.version, None);
+                assert!(!args.check);
+                assert!(!args.yes);
+            }
+            _ => panic!("Expected SelfUpdate command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["enstow", "update", "--version", "0.2.0", "--check", "--yes"])
+                .unwrap();
+        match cli.command {
+            Some(Commands::SelfUpdate(args)) => {
+                assert_eq!(args.version.as_deref(), Some("0.2.0"));
+                assert!(args.check);
+                assert!(args.yes);
+            }
+            _ => panic!("Expected SelfUpdate command via update alias"),
+        }
+
+        let cli = Cli::try_parse_from(["enstow", "-q", "self-update", "--dry-run", "--no-confirm"])
+            .unwrap();
+        assert_eq!(cli.quiet, 1);
+        match cli.command {
+            Some(Commands::SelfUpdate(args)) => {
+                assert!(args.check);
+                assert!(args.yes);
+            }
+            _ => panic!("Expected SelfUpdate command with --dry-run and --no-confirm"),
+        }
     }
 
     #[test]
