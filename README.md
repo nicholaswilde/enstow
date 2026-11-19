@@ -312,6 +312,7 @@ During `apply`, `status`, or `edit`, secret files are decrypted in memory using:
   1. `~/.config/sops/age/keys.txt`
   2. `~/.ssh/id_ed25519`
   3. `~/.ssh/id_rsa`
+
 - **Explicit Identity File:**
 
   ```bash
