@@ -83,7 +83,7 @@ assets = [
     "644",
   ],
   [
-    "README.md",
+    "docs/README.md",
     "usr/share/doc/enstow/README.md",
     "644",
   ],

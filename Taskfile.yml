@@ -3,6 +3,9 @@ version: '3'
 
 dotenv: ['.env']
 
+vars:
+  PORT: 8000
+
 tasks:
   clippy:
     desc: Run cargo clippy
@@ -132,6 +135,16 @@ tasks:
     desc: Lint Markdown files with rumdl
     cmds:
       - rumdl check .
+
+  serve:
+    desc: Serve local Zensical documentation site
+    cmds:
+      - uv run zensical serve -a 0.0.0.0:{{ .PORT }}
+
+  docs:build:
+    desc: Build static Zensical documentation site
+    cmds:
+      - uv run zensical build --clean
 
   coverage:
     desc: Run tests and generate coverage report (stdout summary)

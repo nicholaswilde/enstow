@@ -27,9 +27,17 @@ rustc-ice-*.txt
 lcov.info
 *.info
 
+# Documentation site & Python / uv
+/site
+.cache/
+.venv/
+__pycache__/
+*.pyc
+
 # Agent artifacts
 .codegraph/
 .serena/
+.rumdl_cache/
 .rtk/*
 !.rtk/filters.toml
 .agents/*

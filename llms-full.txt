@@ -10,6 +10,7 @@ enstow manages modular dotfile packages across platforms with native symlink tra
 - [Installation & Prerequisites](#installation--prerequisites)
 - [CLI Usage & Subcommands](#cli-usage--subcommands)
   - [Global Options & Common Arguments](#global-options--common-arguments)
+  - [init](#init)
   - [add](#add)
   - [apply](#apply)
   - [restow](#restow)
@@ -17,12 +18,14 @@ enstow manages modular dotfile packages across platforms with native symlink tra
   - [scrub](#scrub)
   - [status](#status)
   - [diff](#diff)
+  - [doctor](#doctor)
   - [encrypt](#encrypt)
   - [decrypt](#decrypt)
   - [edit](#edit)
   - [rekey](#rekey)
   - [completions](#completions)
   - [man](#man)
+  - [self-update](#self-update)
 - [Conflict Resolution, Backups & Pruning](#conflict-resolution-backups--pruning)
 - [Lifecycle Hooks](#lifecycle-hooks)
 - [Secret Management & Encryption](#secret-management--encryption)
@@ -30,6 +33,7 @@ enstow manages modular dotfile packages across platforms with native symlink tra
   - [Permissions & Memory Safety](#permissions--memory-safety)
   - [Age & SSH Recipient Resolution](#age--ssh-recipient-resolution)
   - [SSH Key Encryption & Decryption](#ssh-key-encryption--decryption)
+  - [Template Rendering & Secret Substitution (.tmpl)](#template-rendering--secret-substitution-tmpl)
 - [Ignore Rules & Patterns](#ignore-rules--patterns)
 - [Configuration & Precedence](#configuration--precedence)
   - [Hierarchical Precedence Order](#hierarchical-precedence-order)
@@ -41,6 +45,9 @@ enstow manages modular dotfile packages across platforms with native symlink tra
   - [src/stow.rs](#srcstowrs)
   - [src/crypto.rs](#srccryptors)
   - [src/diff.rs](#srcdiffrs)
+  - [src/doctor.rs](#srcdoctorrs)
+  - [src/init.rs](#srcinitrs)
+  - [src/update.rs](#srcupdaters)
   - [src/hook.rs](#srchookrs)
   - [src/config.rs](#srcconfigrs)
   - [src/error.rs](#srcerrorrs)
@@ -52,7 +59,41 @@ enstow manages modular dotfile packages across platforms with native symlink tra
 
 ## Architecture & Directory Layout
 
-`enstow` is implemented in Rust (2021 edition) as a single static binary. It is structured around modular packages inside a dotfiles repository:
+`enstow` is implemented in Rust (2021 edition) as a single static binary.
+
+### Repository Layout
+
+```text
+enstow/
+├── Cargo.toml             # Crate manifest, dependencies, Debian metadata, release/ci profiles
+├── Taskfile.yml           # Task runner automation (build, test, lint, docs, release)
+├── build.rs               # Git version injection (PROJECT_VERSION)
+├── pyproject.toml         # Python environment (zensical>=0.0.45) managed via uv
+├── zensical.toml          # Zensical static documentation site configuration
+├── AGENTS.md              # Agent development conventions and architecture
+├── docs/                  # Zensical documentation site and GitHub README
+│   ├── README.md          # Concise GitHub landing page README
+│   ├── index.md           # Documentation site homepage
+│   ├── about.md           # Project overview, features, and security architecture
+│   ├── installation.md    # Installation, self-update, completions, and man page
+│   ├── usage.md           # CLI commands, init, apply, add, status, diff, doctor
+│   ├── configuration.md   # Config files, ignore rules, hooks, profiles, filters, env vars
+│   ├── secrets.md         # Age/SOPS secrets, SSH keys, .tmpl templates, scrubbing
+│   ├── CONTRIBUTING.md    # Contribution guide, quality gates, TDD/symlink notes, DCO
+│   └── CODE_OF_CONDUCT.md # Contributor Covenant code of conduct
+├── assets/
+│   ├── config.example.toml # Fully commented example configuration template
+│   └── enstow.1           # Generated UNIX roff man page
+├── completions/           # Pre-generated shell completion scripts
+├── scripts/
+│   ├── release.sh         # Automated version bump, tag, and push script
+│   └── release_summary.py # Categorized GitHub release notes generator
+└── src/                   # Rust source modules
+```
+
+### Managed Dotfiles Layout
+
+Dotfiles are organized into modular packages inside a source repository:
 
 ```text
 dotfiles/
@@ -63,6 +104,8 @@ dotfiles/
 │   └── .zshenv.age           # Decrypted to mode 0600 -> ~/.zshenv
 ├── nvim/
 │   └── .config/nvim/init.lua # Preserves relative directory structure
+├── git/
+│   └── .gitconfig.tmpl       # Rendered in memory to mode 0600 -> ~/.gitconfig
 └── secrets/
     └── .secrets.sops.yaml    # In-memory SOPS decryption -> ~/.secrets.yaml
 ```
@@ -75,30 +118,41 @@ Target destinations match the directory tree relative to the package directory. 
 
 ### Prerequisites
 
-- **Age:** Optional CLI tool; built-in age crate handles age decryption and encryption internally with SSH key support.
-- **SOPS:** Optional external CLI dependency required only when decrypting `.sops.yaml` files.
-- **Rust Toolchain:** MSRV 1.74+ required for compiling from source.
+- **Age:** Optional CLI tool; built-in `age` crate handles age decryption and encryption internally with SSH key support.
+- **SOPS:** Optional external CLI dependency required only when decrypting `.sops.*` files.
+- **Rust Toolchain:** 1.88+ required for compiling from source.
 
 ### Installation Methods
 
 #### Homebrew
 
 ```bash
-brew tap nicholaswilde/tap
-brew install enstow
+brew install nicholaswilde/homebrew-tap/enstow
 ```
 
-#### Build Locally
+#### APT (Debian / Ubuntu)
+
+Install `.deb` packages (`amd64`, `arm64`, `armhf`, `armel`) from `https://nicholaswilde.io/apt`:
 
 ```bash
-cargo build --release
-cp target/release/enstow ~/.local/bin/
+sudo apt update && sudo apt install enstow
 ```
 
-#### Via Task
+#### Scoop (Windows)
+
+```powershell
+scoop bucket add nicholaswilde https://github.com/nicholaswilde/scoop-bucket
+scoop install enstow
+```
+
+#### Cargo / Build Locally
 
 ```bash
+cargo install --git https://github.com/nicholaswilde/enstow
+# Or build locally:
 task build:local
+# Or directly with Cargo:
+cargo build --release
 ```
 
 ---
@@ -140,6 +194,16 @@ When run without a subcommand (`enstow`), it defaults to executing the `apply` c
 - `[PACKAGES...]`: Specific packages to manage (e.g. `zsh nvim git`). If omitted, all subdirectories or configured packages are processed.
 
 ### Subcommands
+
+### init
+
+Bootstraps dotfile management on a new machine: clones a remote repository (default `~/.dotfiles`), detects host/profile filters, checks/imports age keys, runs pre-flight checks, and applies packages.
+
+```bash
+enstow init https://github.com/username/dotfiles.git
+enstow init https://github.com/username/dotfiles.git --dry-run
+enstow init https://github.com/username/dotfiles.git --branch main -s ~/dotfiles
+```
 
 ### add
 
@@ -274,6 +338,15 @@ Options:
 - `--json`: Output diff in JSON format (`$ENSTOW_JSON`).
 - `--mask-secrets` / `--no-secrets`: Mask sensitive contents in secret diff outputs (`$ENSTOW_MASK_SECRETS`).
 
+### doctor
+
+Audits system health, package collisions, symlink integrity, secret target permissions (`0600`), decryption prerequisites, and potential plaintext secret leaks (alias: `lint`).
+
+```bash
+enstow doctor
+enstow doctor --json
+```
+
 ### encrypt
 
 Encrypts a plaintext dotfile into `.age` format using specified recipient keys, SSH keys, or keys extracted from an age identity file.
@@ -392,6 +465,16 @@ Generates the UNIX roff format manual page for `enstow` to stdout.
 enstow man > assets/enstow.1
 ```
 
+### self-update
+
+Updates `enstow` in-place from GitHub Releases (alias: `update`). Authenticates with `GH_TOKEN` or `GITHUB_TOKEN` when present.
+
+```bash
+enstow self-update --check
+enstow self-update --yes
+enstow self-update --version 0.1.15
+```
+
 ---
 
 ## Conflict Resolution, Backups & Pruning
@@ -493,6 +576,10 @@ When encrypting or re-encrypting via `enstow encrypt`, `enstow edit`, or `enstow
   2. `~/.ssh/id_ed25519`
   3. `~/.ssh/id_rsa`
 - **Passphrase-Protected Keys:** If private keys are protected with passphrases, `enstow` prompts interactively via terminal or reads from `ENSTOW_SSH_PASSPHRASE` or `SSH_PASSPHRASE`.
+
+### Template Rendering & Secret Substitution (`.tmpl`)
+
+Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in memory with contextual variables (`{{ os }}`, `{{ arch }}`, `{{ hostname }}`, `{{ profile }}`, `{{ env.VAR }}`) and encrypted key-value secret stores (`{{ secrets.KEY }}`, `{{ secrets.<store>.KEY }}` from `.age` / `.sops.*` files), then written with `0600` (or custom configured) permissions. Hidden secret stores (`.secrets.age`, `.secrets.*.age`) are automatically excluded from direct deployment.
 
 ---
 
@@ -719,9 +806,12 @@ Declares public library modules:
 - `pub mod config;`
 - `pub mod crypto;`
 - `pub mod diff;`
+- `pub mod doctor;`
 - `pub mod error;`
 - `pub mod hook;`
+- `pub mod init;`
 - `pub mod stow;`
+- `pub mod update;`
 
 ### `src/cli.rs`
 
@@ -778,6 +868,25 @@ Implements unified diffing:
 - `struct FileDiff`: Pairs `FileAction`, `is_secret` flag, and unified diff output.
 - `fn plan_diff(...) -> Result<Vec<FileDiff>, EnstowError>`: Compares source dotfiles (decrypting secrets in memory) against target filesystem contents.
 - Supports secret masking (`--mask-secrets`) and JSON formatting.
+
+### `src/doctor.rs`
+
+Implements repository and deployment health diagnostics:
+
+- `fn run_doctor(...)`: Executes package collision, symlink health, secret permission (`0600`), decryption prerequisite, and plaintext secret leak checks.
+
+### `src/init.rs`
+
+Implements machine bootstrapping (`enstow init`):
+
+- `fn clone_repository(...)`: Clones remote dotfiles repository into target source directory.
+- `fn run_init(...)`: Orchestrates repository onboarding, host/profile detection, key verification, and package application.
+
+### `src/update.rs`
+
+Implements in-place binary self-updating (`enstow self-update` / `update`):
+
+- `fn run_self_update(...)`: Checks GitHub Releases and downloads/replaces the binary using `self_update` with `GH_TOKEN`/`GITHUB_TOKEN` auth support.
 
 ### `src/hook.rs`
 
@@ -865,6 +974,12 @@ task build
 
 # Build locally in release mode
 task build:local
+
+# Serve local Zensical documentation site via uv
+task serve
+
+# Build static Zensical documentation site via uv
+task docs:build
 ```
 
 ### CI Verification Matrix
@@ -886,3 +1001,4 @@ GitHub Actions (`.github/workflows/ci.yml`) runs quality checks across multiple 
 - **Author / Maintainer:** Nicholas Wilde
 - **License:** Apache License, Version 2.0 ([LICENSE](LICENSE))
 - **Repository:** [https://github.com/nicholaswilde/enstow](https://github.com/nicholaswilde/enstow)
+- **Documentation Site:** [https://nicholaswilde.io/enstow](https://nicholaswilde.io/enstow)

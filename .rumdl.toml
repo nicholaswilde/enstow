@@ -4,7 +4,7 @@
 [global]
 respect-gitignore = true
 
-exclude = [".git", "node_modules", "vendor", "target"]
+exclude = [".git", "node_modules", "vendor", "target", ".venv", "site"]
 
 # Relaxed rules suited for CLI documentation
 disable = [
@@ -18,3 +18,10 @@ indent = 2
 
 [MD024]
 siblings-only = true
+
+[per-file-flavor]
+"docs/**/*.md" = "mkdocs"
+
+[per-file-ignores]
+# Zensical/MkDocs strips :emoji: shortcodes from heading anchor slugs
+"docs/**/*.md" = ["MD051"]

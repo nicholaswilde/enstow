@@ -2,13 +2,21 @@
 
 > A secret-aware dotfile manager combining GNU stow symlinking with seamless sops and age decryption.
 
-enstow manages modular dotfile packages across platforms with native symlink tracking and in-memory decryption for secret files (e.g., .age and .sops.yaml). Plaintext secret targets are written with strict permissions (0600) without ever storing plaintext secrets in version control.
+enstow manages modular dotfile packages across platforms with native symlink tracking and in-memory decryption for secret files (e.g., `.age` and `.sops.yaml`) plus `.tmpl` template rendering. Plaintext secret targets are written with strict permissions (`0600`) without ever storing plaintext secrets in version control.
 
 ## Documentation
 
-- [Project README](README.md): Comprehensive user guide covering features, installation, commands, examples, environment variables, configuration, and hooks.
+- [docs/README.md](docs/README.md): Project overview, TL;DR installation, and usage quickstart.
+- [docs/index.md](docs/index.md): Documentation site homepage.
+- [docs/about.md](docs/about.md): Project overview, feature highlights, and architecture/security guarantees.
+- [docs/installation.md](docs/installation.md): Installation options (Homebrew, APT, Scoop, GitHub Releases, Cargo), `self-update`, shell completions, and man page.
+- [docs/usage.md](docs/usage.md): CLI command reference, machine bootstrapping, applying/ingesting/adopting dotfiles, diffs, status, `doctor`, conflicts, backups, and pruning.
+- [docs/configuration.md](docs/configuration.md): Hierarchical config precedence, TOML/YAML/JSON examples, ignore rules, lifecycle hooks, package profiles, platform/host filters, custom permissions, and environment variables.
+- [docs/secrets.md](docs/secrets.md): Secret detection, `encrypt`/`decrypt`/`edit`/`rekey`, SSH keys, `.tmpl` template rendering, secure scrubbing, and `0600` permission hygiene.
+- [AGENTS.md](AGENTS.md): Architecture, tech stack, conventions, and quality gates.
 - [Man Page](assets/enstow.1): UNIX roff manual page documenting CLI arguments, subcommands, options, and behaviors.
 - [Configuration Example](assets/config.example.toml): Fully commented template demonstrating options for source, target, packages, profiles, keys, permissions, lifecycle hooks, and ignore rules.
+- [Full Context (llms-full.txt)](llms-full.txt): Single-file compiled documentation and architecture reference for LLMs.
 
 ## Core Modules
 
@@ -16,37 +24,48 @@ enstow manages modular dotfile packages across platforms with native symlink tra
 - [Stow Engine](src/stow.rs): Dotfile scanning, file action planning, symlink creation, collision handling, backups, adopt mode, and status auditing.
 - [Cryptographic Engine](src/crypto.rs): Secret detection, in-memory age and sops decryption, secure file creation (0600), encryption, interactive editing, and rekeying.
 - [Diff Engine](src/diff.rs): Unified diff generation between dotfiles and destination targets with secret masking support.
+- [Doctor Diagnostics](src/doctor.rs): System health checks covering package collisions, symlink health, secret permissions, decryption prerequisites, and secret leak scanning.
+- [Onboarding Engine](src/init.rs): Machine bootstrap flow (`enstow init`) for cloning repositories, detecting host/profile filters, verifying keys, and applying packages.
+- [Self-Updater](src/update.rs): GitHub Releases binary updater (`enstow self-update` / `update`).
 - [Lifecycle Hooks](src/hook.rs): Pre- and post-apply and unstow lifecycle hook execution with contextual environment variables.
-- [Configuration Engine](src/config.rs): Hierarchical configuration parser for TOML, YAML, and JSON with profile and hook support.
+- [Configuration Engine](src/config.rs): Hierarchical configuration parser for TOML, YAML, and JSON with profile, condition filter, permission, and hook support.
 - [Error Types](src/error.rs): Custom domain error definitions covering I/O, encryption, decryption, symlink, hook, and configuration failures.
 - [Library Root](src/lib.rs): Public module declarations and API surface.
 - [Main Entry](src/main.rs): Main executable entry point with tracing initialization, configuration merging, and subcommand dispatch.
 
 ## CLI Commands
 
-- [Add](README.md#ingesting-dotfiles-enstow-add): Ingest an existing machine dotfile into a package as a symlink or encrypted secret.
-- [Apply](README.md#applying-dotfiles): Symlink regular dotfiles and decrypt secret files into target directories.
-- [Restow](README.md#restowing-packages): Re-apply dotfiles, pruning stale links and re-decrypting modified secrets.
-- [Unstow](README.md#unstowing-dotfiles): Cleanly remove symlinks and decrypted secret target files with optional secure shredding (--shred).
-- [Scrub](README.md#unstowing-dotfiles): Securely zeroize and delete decrypted secret files and symlinks.
-- [Status](README.md#inspecting-status): Inspect sync, missing, conflict, modified drift, and unverified states with optional JSON output.
-- [Diff](README.md#commands): Show unified diff between package dotfiles and target destination with optional secret masking and JSON output.
-- [Encrypt](README.md#encrypting-secrets): Encrypt dotfile secrets to recipient age public keys, SSH keys, or identity key files.
-- [Decrypt](README.md#ssh-key-encryption--decryption): Decrypt an age or sops encrypted secret dotfile to stdout or file.
-- [Edit](README.md#editing-secrets): Decrypt, edit in temporary memory or editor, and re-encrypt age secret files safely.
-- [Rekey](README.md#commands): Re-encrypt age secrets across packages with updated recipient public keys.
-- [Completions](README.md#shell-completions): Generate dynamic or static shell completion scripts for Bash, Zsh, Fish, PowerShell, and Elvish.
-- [Man](README.md#man-page): Output UNIX roff format man page to stdout.
+- [Init](docs/usage.md#bootstrapping-a-new-machine-enstow-init): Bootstrap dotfile repository onboarding: clone, detect host/profile, check keys, and apply.
+- [Add](docs/usage.md#ingesting-dotfiles-enstow-add): Ingest an existing machine dotfile into a package as a symlink or encrypted secret.
+- [Apply](docs/usage.md#applying-dotfiles-enstow-apply): Symlink regular dotfiles and decrypt secret files into target directories (alias: `sync`).
+- [Restow](docs/usage.md#restowing-packages-enstow-restow): Re-apply dotfiles, pruning stale links and re-decrypting modified secrets.
+- [Unstow](docs/usage.md#unstowing-scrubbing-dotfiles-enstow-unstow-scrub): Cleanly remove symlinks and decrypted secret target files with optional secure shredding (`--shred`).
+- [Scrub](docs/usage.md#unstowing-scrubbing-dotfiles-enstow-unstow-scrub): Securely zeroize and delete decrypted secret files and symlinks.
+- [Status](docs/usage.md#inspecting-status-enstow-status): Inspect sync, missing, conflict, modified drift, and unverified states with optional JSON output.
+- [Diff](docs/usage.md#inspecting-diffs-enstow-diff): Show unified diff between package dotfiles and target destination with optional secret masking and JSON output.
+- [Doctor](docs/usage.md#system-diagnostics-enstow-doctor): Audit system health, secret hygiene, permissions, and symlinks (alias: `lint`).
+- [Encrypt](docs/secrets.md#encrypting-secrets-enstow-encrypt): Encrypt dotfile secrets to recipient age public keys, SSH keys, identity key files, or passphrase.
+- [Decrypt](docs/secrets.md#decrypting-secrets-enstow-decrypt): Decrypt an age or sops encrypted secret dotfile to stdout or file.
+- [Edit](docs/secrets.md#editing-secrets-enstow-edit): Decrypt, edit in temporary memory or editor, and re-encrypt age secret files safely.
+- [Rekey](docs/secrets.md#rekeying-secrets-enstow-rekey): Re-encrypt age secrets across packages with updated recipient public keys.
+- [Completions](docs/installation.md#shell-completions): Generate dynamic or static shell completion scripts for Bash, Zsh, Fish, PowerShell, and Elvish.
+- [Man](docs/installation.md#man-page): Output UNIX roff format man page to stdout.
+- [Self-Update](docs/installation.md#github-releases-self-update): Update enstow in-place from GitHub Releases (alias: `update`).
 
 ## Build and Quality Gates
 
-- [Cargo Manifest](Cargo.toml): Package configuration, dependencies (clap, age, walkdir, serde, tempfile, similar), and release profile definitions.
-- [Taskfile Automation](Taskfile.yml): Standard tasks for cross-compiling, testing, clippy linting, formatting, coverage, and releases.
+- [Cargo Manifest](Cargo.toml): Package configuration, dependencies (`clap`, `age`, `walkdir`, `serde`, `tempfile`, `similar`, `self_update`), Debian packaging metadata, and release profiles.
+- [Taskfile Automation](Taskfile.yml): Standard tasks for cross-compiling, testing, clippy linting, formatting, coverage, Zensical docs, and releases.
+- [Python Docs Environment](pyproject.toml): Python environment (`zensical>=0.0.45`) for building the static documentation site via `uv`.
+- [Zensical Configuration](zensical.toml): Zensical static documentation site configuration, theme, plugins, extensions, and navigation.
 - [CI Pipeline](.github/workflows/ci.yml): GitHub Actions automated test, lint, and cross-platform verification matrix.
+- [Docs Deployment](.github/workflows/docs.yml): GitHub Pages deployment workflow for the Zensical documentation site.
 
 ## Optional
 
+- [Contributing Guide](docs/CONTRIBUTING.md): Development workflow, quality gates, TDD/symlink testing conventions, and DCO guidelines.
+- [Code of Conduct](docs/CODE_OF_CONDUCT.md): Contributor Covenant code of conduct.
 - [License](LICENSE): Apache 2.0 license file.
 - [Release Script](scripts/release.sh): Automated version bump, validation, and git tagging script.
 - [Release Summary](scripts/release_summary.py): Script generating categorized GitHub release notes from git commits.
-- [Pre-generated Completions](completions): Directory containing shell completions for Bash, Zsh, Fish, PowerShell, and Elvish.
+- [Pre-generated Completions](completions/): Directory containing shell completions for Bash, Zsh, Fish, PowerShell, and Elvish.

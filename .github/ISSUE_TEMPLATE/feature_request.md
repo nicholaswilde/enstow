@@ -21,7 +21,7 @@ Why this feature is needed and the use cases it addresses.
 - [ ] **Core Functionality:** Primary capability or subcommand to add.
 - [ ] **CLI / Config Interface:** Flags, options, or configuration schema changes.
 - [ ] **Tests:** Unit and integration tests covering the new behavior.
-- [ ] **Documentation:** Updates to README.md and man page assets if applicable.
+- [ ] **Documentation:** Updates to `docs/` and man page assets if applicable.
 
 ## :memo: Additional Context
 
