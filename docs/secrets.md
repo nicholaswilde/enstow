@@ -149,6 +149,7 @@ Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in
 ## :fire: Secure Secret Scrubbing & Permission Hygiene
 
 - **Strict Default Permissions (`0600`):** Every decrypted secret and rendered `.tmpl` target is created with mode `0600` (`-rw-------`) on Unix. Customize modes per glob or per package via `[permissions]` and `[package.<name>.permissions]` in [Configuration](./configuration.md#custom-target-permissions).
+
 - **Zeroize-Before-Unlink (`--shred` / `scrub`):** When decommissioning a machine or removing sensitive dotfiles, overwrite decrypted target files with zeros and flush to disk before unlinking:
 
     ```bash
