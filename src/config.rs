@@ -427,7 +427,15 @@ const REPO_LOCAL_CONFIG_NAMES: &[&str] = &[
 ];
 
 fn resolve_relative_to_config(path: &Path, config_path: &Path) -> PathBuf {
-    if path.as_os_str().is_empty() || path.is_absolute() || path.strip_prefix("~").is_ok() {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.has_root()
+        || matches!(
+            path.components().next(),
+            Some(std::path::Component::Prefix(_))
+        )
+        || path.strip_prefix("~").is_ok()
+    {
         return path.to_path_buf();
     }
     let Some(parent) = config_path.parent().filter(|p| !p.as_os_str().is_empty()) else {
@@ -1689,6 +1697,57 @@ mod tests {
         let txt_path = dir.path().join("config.txt");
         fs::write(&txt_path, "source = \"txt\"\n").unwrap();
         assert!(ConfigFile::load_from_path(&txt_path).is_err());
+    }
+
+    #[test]
+    fn test_resolve_relative_to_config_preserves_rooted_paths() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+
+        // Relative paths resolve against config parent
+        assert_eq!(
+            resolve_relative_to_config(Path::new("."), &cfg_path),
+            dir.path()
+        );
+        assert_eq!(
+            resolve_relative_to_config(Path::new("./pkgs"), &cfg_path),
+            dir.path().join("pkgs")
+        );
+        assert_eq!(
+            resolve_relative_to_config(Path::new("pkgs"), &cfg_path),
+            dir.path().join("pkgs")
+        );
+
+        // Rooted, tilde, and empty paths stay untouched on all platforms (including Windows where
+        // `/path` has `has_root() == true` while `is_absolute() == false`)
+        assert_eq!(
+            resolve_relative_to_config(Path::new("/discovered/path"), &cfg_path),
+            PathBuf::from("/discovered/path")
+        );
+        assert_eq!(
+            resolve_relative_to_config(Path::new("~/dotfiles"), &cfg_path),
+            PathBuf::from("~/dotfiles")
+        );
+        assert_eq!(
+            resolve_relative_to_config(Path::new(""), &cfg_path),
+            PathBuf::from("")
+        );
+
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                resolve_relative_to_config(Path::new(r"\discovered\path"), &cfg_path),
+                PathBuf::from(r"\discovered\path")
+            );
+            assert_eq!(
+                resolve_relative_to_config(Path::new(r"C:\discovered\path"), &cfg_path),
+                PathBuf::from(r"C:\discovered\path")
+            );
+            assert_eq!(
+                resolve_relative_to_config(Path::new(r"C:relative"), &cfg_path),
+                PathBuf::from(r"C:relative")
+            );
+        }
     }
 
     #[test]
