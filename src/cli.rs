@@ -68,7 +68,7 @@ pub struct CommonArgs {
     #[arg(short = 'b', long)]
     pub backup: bool,
 
-    /// Directory to relocate conflicting target files during backup
+    /// Directory to relocate conflicting target files during backup (supports `{timestamp}` placeholder; defaults to `$target/.enstow-backup/{timestamp}`)
     #[arg(long, value_name = "PATH")]
     pub backup_dir: Option<PathBuf>,
 
@@ -119,9 +119,11 @@ impl CommonArgs {
     }
 
     pub fn backup_dir_path(&self) -> PathBuf {
-        self.backup_dir
-            .clone()
-            .unwrap_or_else(|| self.target_path().join(".enstow-backup"))
+        self.backup_dir.clone().unwrap_or_else(|| {
+            self.target_path()
+                .join(".enstow-backup")
+                .join(crate::stow::BACKUP_TIMESTAMP_PLACEHOLDER)
+        })
     }
 }
 
@@ -155,7 +157,7 @@ pub struct InitArgs {
     #[arg(short = 'b', long)]
     pub backup: bool,
 
-    /// Directory to relocate conflicting target files during backup
+    /// Directory to relocate conflicting target files during backup (supports `{timestamp}` placeholder; defaults to `$target/.enstow-backup/{timestamp}`)
     #[arg(long, value_name = "PATH")]
     pub backup_dir: Option<PathBuf>,
 

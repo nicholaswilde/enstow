@@ -16,7 +16,7 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
 1. **Command Line Arguments** (e.g. `--source`, `--target`, `--dry-run`, `--force`, `--backup`, `--backup-dir`, `--prune`, `--adopt`, `--age-key-file`, `--recipient`, `--profile`, `--editor`, `--ignore`, `--json`, `--mask-secrets`, `--no-hooks`, `--shred`, `--log-level`)
 2. **Environment Variables** (e.g. `ENSTOW_SOURCE`, `ENSTOW_TARGET`, `ENSTOW_DRY_RUN`, `ENSTOW_FORCE`, `ENSTOW_BACKUP`, `ENSTOW_BACKUP_DIR`, `ENSTOW_PRUNE`, `ENSTOW_ADOPT`, `ENSTOW_AGE_KEY_FILE`, `ENSTOW_RECIPIENTS`, `ENSTOW_PACKAGES`, `ENSTOW_PROFILE`, `ENSTOW_IGNORE`, `ENSTOW_EDITOR`, `ENSTOW_JSON`, `ENSTOW_MASK_SECRETS`, `ENSTOW_NO_HOOKS`, `ENSTOW_SHRED`, `ENSTOW_LOG_LEVEL`)
 3. **Configuration File** (discovered in order: `-C <path>` / `--config <path>` > `ENSTOW_CONFIG` > repo-local `.enstow.{toml,yaml,yml,json}` or `enstow.{toml,yaml,yml,json}` in `--source`, `ENSTOW_SOURCE`, or current directory > global `$XDG_CONFIG_HOME/enstow/config.{toml,yaml,yml,json}` / `~/.config/enstow/config.{toml,yaml,yml,json}`)
-4. **Built-in Defaults** (`source = "."`, `target = "$HOME"`, `dry_run = false`, `force = false`, `backup = false`, `backup_dir = "$target/.enstow-backup"`, `prune = false`, `adopt = false`, `json = false`, `mask_secrets = false`, `no_hooks = false`, `shred = false`, `log_level = "info"`)
+4. **Built-in Defaults** (`source = "."`, `target = "$HOME"`, `dry_run = false`, `force = false`, `backup = false`, `backup_dir = "$target/.enstow-backup/{timestamp}"`, `prune = false`, `adopt = false`, `json = false`, `mask_secrets = false`, `no_hooks = false`, `shred = false`, `log_level = "info"`)
 
 !!! note
     Relative `source` values in a configuration file (such as `source = "."` or `source = "packages"`) resolve relative to the configuration file's parent directory rather than the current working directory. `~`-prefixed and absolute paths are preserved as-is, and CLI `--source` or `ENSTOW_SOURCE` overrides take precedence.
@@ -33,7 +33,7 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
     dry_run = false
     force = false
     backup = false
-    backup_dir = "~/.enstow-backup"
+    backup_dir = "~/.enstow-backup/{timestamp}"
     prune = true
     adopt = false
     age_key_file = "~/.config/sops/age/keys.txt"
@@ -89,7 +89,7 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
     dry_run: false
     force: false
     backup: false
-    backup_dir: ~/.enstow-backup
+    backup_dir: ~/.enstow-backup/{timestamp}
     prune: true
     adopt: false
     age_key_file: ~/.config/sops/age/keys.txt
@@ -158,7 +158,7 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
       "dry_run": false,
       "force": false,
       "backup": false,
-      "backup_dir": "~/.enstow-backup",
+      "backup_dir": "~/.enstow-backup/{timestamp}",
       "prune": true,
       "adopt": false,
       "age_key_file": "~/.config/sops/age/keys.txt",
@@ -365,7 +365,7 @@ Decrypted secrets and rendered `.tmpl` files default to mode `0600` (`-rw-------
 | `ENSTOW_DRY_RUN` | `dry_run` | `-n`, `--dry-run` | Preview actions without disk modifications (`true`/`false`) | `false` |
 | `ENSTOW_FORCE` | `force` | `-f`, `--force` | Overwrite conflicting destination files (`true`/`false`) | `false` |
 | `ENSTOW_BACKUP` | `backup` | `-b`, `--backup` | Move colliding destination files to backup directory (`true`/`false`) | `false` |
-| `ENSTOW_BACKUP_DIR` | `backup_dir` | `--backup-dir` | Path to directory where conflicting files are relocated | `$TARGET/.enstow-backup` |
+| `ENSTOW_BACKUP_DIR` | `backup_dir` | `--backup-dir` | Path to directory where conflicting files are relocated (expands `{timestamp}` to `YYYYMMDD_HHMMSS` UTC per run; literal when omitted) | `$TARGET/.enstow-backup/{timestamp}` |
 | `ENSTOW_PRUNE` | `prune` | `--prune` | Prune stale managed symlinks during apply (`true`/`false`) | `false` |
 | `ENSTOW_ADOPT` | `adopt` | `--adopt` | Adopt conflicting destination files into source package during apply (`true`/`false`) | `false` |
 | `ENSTOW_NO_HOOKS` | `no_hooks` | `--no-hooks` | Skip execution of pre- and post-lifecycle hooks (`true`/`false`) | `false` |

@@ -469,7 +469,10 @@ fn test_backup_precedence_hierarchy() {
     // 1. Defaults when nothing is set
     let resolved = resolve_common_args(&empty_cli, None).unwrap();
     assert!(!resolved.backup);
-    assert_eq!(resolved.backup_dir, resolved.target.join(".enstow-backup"));
+    assert_eq!(
+        resolved.backup_dir,
+        resolved.target.join(".enstow-backup").join("{timestamp}")
+    );
 
     // 2. Config file sets backup and backup_dir
     let toml_str = r#"

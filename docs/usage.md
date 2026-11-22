@@ -63,9 +63,9 @@ enstow apply zsh nvim tmux
 # Overwrite existing conflicting files or differing symlinks
 enstow apply --force zsh
 
-# Backup conflicting target files to ~/.enstow-backup before overwriting
+# Backup conflicting target files to ~/.enstow-backup/<YYYYMMDD_HHMMSS> before overwriting
 enstow apply --backup zsh
-enstow apply -b --backup-dir ~/.dotfiles-backup zsh
+enstow apply -b --backup-dir ~/.dotfiles-backup/{timestamp} zsh
 
 # Prune stale symlinks no longer present in source packages
 enstow apply --prune zsh
@@ -195,14 +195,20 @@ When a target destination already exists with different content or unmanaged fil
 - **Interactive (`-I`, `--interactive`):** Prompts on each collision or secret drift with `[d]iff`, `[o]verwrite`, `[a]dopt`, or `[s]kip`.
 - **Adopt (`--adopt`):** Copies conflicting target files into the source package (overwriting source) and re-links.
 - **Force (`-f`, `--force`):** Overwrites conflicting target files or replaces differing symlinks.
-- **Backup (`-b`, `--backup`):** Relocates colliding destination files out of the way before creating the new link or secret.
-- **Backup Directory (`--backup-dir <path>`):** Sets custom destination for backups (defaults to `$TARGET/.enstow-backup`).
+- **Backup (`-b`, `--backup`):** Relocates colliding destination files out of the way before creating the new link or secret. Only creates the backup directory lazily when at least one file is actually backed up (skipped on `--dry-run` or zero conflicts) and prints the backup path summary when files are moved.
+- **Backup Directory (`--backup-dir <path>`):** Sets custom destination for backups. Defaults to `$TARGET/.enstow-backup/{timestamp}`, expanding `{timestamp}` to a `YYYYMMDD_HHMMSS` UTC subdirectory per run (with `_1`, `_2`, ... suffixes if multiple runs occur within the same second) so repeated `--backup` runs never overwrite earlier backups. Explicit `--backup-dir` paths also expand `{timestamp}` if present, or stay literal when omitted.
 
 ```bash
 # Interactively resolve collisions and secret drift file-by-file
 enstow apply -I zsh
 
-# Safely apply with backup
+# Safely apply with default timestamped backup ($TARGET/.enstow-backup/<YYYYMMDD_HHMMSS>)
+enstow apply -b zsh
+
+# Custom timestamped backup directory
+enstow apply -b --backup-dir "$HOME/backup-dir/{timestamp}" zsh
+
+# Explicit literal backup directory (no automatic timestamp subdirectory)
 enstow apply -b --backup-dir ~/backup-dir zsh
 
 # Adopt existing target files into source package and replace with symlinks

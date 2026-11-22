@@ -409,7 +409,7 @@ backup = true
     assert!(resolved.backup);
     assert_eq!(
         resolved.backup_dir,
-        target_dir.path().join(".enstow-backup")
+        target_dir.path().join(".enstow-backup").join("{timestamp}")
     );
 
     let common = resolved.to_common_args();
@@ -428,8 +428,14 @@ backup = true
     // Symlinked
     assert!(enstow::stow::is_symlink_to(&existing_target, &file));
 
-    // Backed up
-    let backup_file = target_dir.path().join(".enstow-backup").join("app.conf");
+    // Backed up into a timestamped subdirectory under .enstow-backup
+    let backup_root = target_dir.path().join(".enstow-backup");
+    let entries: Vec<_> = fs::read_dir(&backup_root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let backup_file = entries[0].join("app.conf");
     assert!(backup_file.exists());
     assert_eq!(fs::read_to_string(&backup_file).unwrap(), "version=1.0\n");
 }
@@ -948,4 +954,130 @@ fn test_decrypt_idempotent_non_interactive_without_force() {
     )
     .unwrap_err();
     assert!(matches!(err, EnstowError::Collision { .. }));
+}
+
+#[test]
+fn test_repeated_backup_runs_preserve_earlier_backups_and_create_lazily() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let src_file = source_dir.path().join("app.conf");
+    fs::write(&src_file, "managed\n").unwrap();
+    let target_file = target_dir.path().join("app.conf");
+
+    let common = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        backup: true,
+        ..Default::default()
+    };
+    let backup_template = common.backup_dir_path();
+    assert_eq!(
+        backup_template,
+        target_dir.path().join(".enstow-backup").join("{timestamp}")
+    );
+    let backup_root = target_dir.path().join(".enstow-backup");
+    let actions = vec![FileAction::Symlink {
+        source: src_file.clone(),
+        target: target_file.clone(),
+    }];
+
+    // 1. Zero conflicts -> lazy creation skips creating .enstow-backup entirely
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        None,
+        false,
+        true,
+        Some(&backup_template),
+        Some(target_dir.path()),
+    )
+    .unwrap();
+    assert!(!backup_root.exists());
+    assert!(enstow::stow::is_symlink_to(&target_file, &src_file));
+
+    // 2. Dry-run with conflict -> still does not create .enstow-backup
+    fs::remove_file(&target_file).unwrap();
+    fs::write(&target_file, "first conflict\n").unwrap();
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        true,
+        None,
+        false,
+        true,
+        Some(&backup_template),
+        Some(target_dir.path()),
+    )
+    .unwrap();
+    assert!(!backup_root.exists());
+
+    // 3. First real backup run
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        None,
+        false,
+        true,
+        Some(&backup_template),
+        Some(target_dir.path()),
+    )
+    .unwrap();
+    assert!(enstow::stow::is_symlink_to(&target_file, &src_file));
+
+    // 4. Second real backup run (even within the same second) must NOT clobber first backup
+    fs::remove_file(&target_file).unwrap();
+    fs::write(&target_file, "second conflict\n").unwrap();
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        None,
+        false,
+        true,
+        Some(&backup_template),
+        Some(target_dir.path()),
+    )
+    .unwrap();
+    assert!(enstow::stow::is_symlink_to(&target_file, &src_file));
+
+    let mut contents: Vec<String> = fs::read_dir(&backup_root)
+        .unwrap()
+        .map(|entry| {
+            let run_dir = entry.unwrap().path();
+            assert!(run_dir.is_dir());
+            fs::read_to_string(run_dir.join("app.conf")).unwrap()
+        })
+        .collect();
+    contents.sort();
+    assert_eq!(contents, vec!["first conflict\n", "second conflict\n"]);
+
+    // 5. Custom backup_dir with inline {timestamp} template preserves repeated runs
+    let custom_root = tempdir().unwrap();
+    let custom_template = custom_root.path().join("run-{timestamp}").join("files");
+
+    for label in ["custom-1\n", "custom-2\n"] {
+        fs::remove_file(&target_file).unwrap();
+        fs::write(&target_file, label).unwrap();
+        enstow::stow::execute_plan_with_backup(
+            &actions,
+            false,
+            None,
+            false,
+            true,
+            Some(&custom_template),
+            Some(target_dir.path()),
+        )
+        .unwrap();
+    }
+
+    let mut custom_contents: Vec<String> = fs::read_dir(custom_root.path())
+        .unwrap()
+        .map(|entry| {
+            let run_dir = entry.unwrap().path();
+            let name = run_dir.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with("run-"), "unexpected dir name: {name}");
+            fs::read_to_string(run_dir.join("files").join("app.conf")).unwrap()
+        })
+        .collect();
+    custom_contents.sort();
+    assert_eq!(custom_contents, vec!["custom-1\n", "custom-2\n"]);
 }

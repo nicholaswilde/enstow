@@ -17,8 +17,8 @@
 # Backup conflicting target files before overwriting ($ENSTOW_BACKUP or -b / --backup)
 # backup = false
 
-# Directory to relocate conflicting target files during backup ($ENSTOW_BACKUP_DIR or --backup-dir, defaults to $target/.enstow-backup)
-# backup_dir = "~/.enstow-backup"
+# Directory to relocate conflicting target files during backup ($ENSTOW_BACKUP_DIR or --backup-dir, supports {timestamp}, defaults to $target/.enstow-backup/{timestamp})
+# backup_dir = "~/.enstow-backup/{timestamp}"
 
 # Path to age identity key file for secret decryption and encryption ($ENSTOW_AGE_KEY_FILE or $SOPS_AGE_KEY_FILE)
 # age_key_file = "~/.config/sops/age/keys.txt"

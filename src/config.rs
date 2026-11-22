@@ -1213,7 +1213,12 @@ pub fn resolve_common_args(
         config.and_then(|c| c.backup).unwrap_or_default()
     };
 
-    // 10. Backup directory precedence: CLI (--backup-dir) > ENSTOW_BACKUP_DIR > Config > Default ($target/.enstow-backup)
+    // 10. Backup directory precedence: CLI (--backup-dir) > ENSTOW_BACKUP_DIR > Config > Default ($target/.enstow-backup/{timestamp})
+    let default_backup_dir = || {
+        target
+            .join(".enstow-backup")
+            .join(crate::stow::BACKUP_TIMESTAMP_PLACEHOLDER)
+    };
     let backup_dir = if let Some(bd) = &cli_args.backup_dir {
         bd.clone()
     } else if let Ok(bd_env) = std::env::var("ENSTOW_BACKUP_DIR") {
@@ -1222,12 +1227,12 @@ pub fn resolve_common_args(
         } else {
             config
                 .and_then(|c| c.backup_dir.clone())
-                .unwrap_or_else(|| target.join(".enstow-backup"))
+                .unwrap_or_else(default_backup_dir)
         }
     } else if let Some(bd) = config.and_then(|c| c.backup_dir.clone()) {
         bd
     } else {
-        target.join(".enstow-backup")
+        default_backup_dir()
     };
 
     // 11. Target permissions: from Config permissions and package_permissions

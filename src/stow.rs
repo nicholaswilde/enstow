@@ -659,103 +659,27 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
     colorize: bool,
 ) -> Result<(), EnstowError> {
     let mut unfolded_dry_run = std::collections::HashSet::new();
+    let resolved_backup_dir = if backup {
+        backup_dir.map(|bd| {
+            resolve_backup_dir_for_run(bd, &format_backup_timestamp(std::time::SystemTime::now()))
+        })
+    } else {
+        None
+    };
+    let mut backed_up_count: usize = 0;
 
-    for action in actions {
-        match action {
-            FileAction::Symlink { source, target } => {
-                let had_folded = unfold_folded_ancestors(
-                    source,
-                    target,
-                    target_root,
-                    dry_run,
-                    &mut unfolded_dry_run,
-                )?;
-                if dry_run && had_folded {
-                    println!(
-                        "[dry-run] LINK  {} -> {}",
-                        target.display(),
-                        source.display()
-                    );
-                    continue;
-                }
-
-                if is_symlink_to(target, source) {
-                    continue;
-                }
-
-                ensure_target_not_inside_source(source, target, target_root)?;
-
-                let mut file_force = force;
-                let mut file_adopt = adopt;
-
-                if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if !file_force && !backup && !file_adopt {
-                        if interactive {
-                            match prompt_conflict_resolution(
-                                action,
-                                age_key_file,
-                                reader,
-                                writer,
-                                colorize,
-                            )? {
-                                ConflictResolution::Overwrite => file_force = true,
-                                ConflictResolution::Adopt => file_adopt = true,
-                                ConflictResolution::Skip => continue,
-                            }
-                        } else {
-                            return Err(EnstowError::Collision {
-                                path: target.to_path_buf(),
-                            });
-                        }
-                    }
-
-                    if file_adopt {
-                        if dry_run {
-                            println!(
-                                "[dry-run] ADOPT {} -> {}",
-                                target.display(),
-                                source.display()
-                            );
-                            println!(
-                                "[dry-run] LINK  {} -> {}",
-                                target.display(),
-                                source.display()
-                            );
-                            continue;
-                        }
-
-                        if let Some(parent) = source.parent() {
-                            std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
-                                path: parent.to_path_buf(),
-                                source: e,
-                            })?;
-                        }
-                        std::fs::copy(target, source).map_err(|e| EnstowError::Io {
-                            path: source.to_path_buf(),
-                            source: e,
-                        })?;
-                        #[cfg(unix)]
-                        {
-                            let _ = std::fs::set_permissions(source, meta.permissions());
-                        }
-                        remove_target(target, &meta)?;
-                        create_symlink(source, target, true)?;
-                        continue;
-                    }
-
-                    let backup_dest =
-                        backup_dir.map(|bd| compute_backup_dest(target, bd, target_root));
-
-                    if dry_run {
-                        if backup {
-                            if let Some(dest) = &backup_dest {
-                                println!(
-                                    "[dry-run] BACKUP {} -> {}",
-                                    target.display(),
-                                    dest.display()
-                                );
-                            }
-                        }
+    let result: Result<(), EnstowError> = (|| {
+        for action in actions {
+            match action {
+                FileAction::Symlink { source, target } => {
+                    let had_folded = unfold_folded_ancestors(
+                        source,
+                        target,
+                        target_root,
+                        dry_run,
+                        &mut unfolded_dry_run,
+                    )?;
+                    if dry_run && had_folded {
                         println!(
                             "[dry-run] LINK  {} -> {}",
                             target.display(),
@@ -764,141 +688,123 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                         continue;
                     }
 
-                    if backup {
-                        if let Some(dest) = &backup_dest {
-                            backup_file(target, dest)?;
-                        }
-                    } else if file_force {
-                        remove_target(target, &meta)?;
+                    if is_symlink_to(target, source) {
+                        continue;
                     }
-                } else if dry_run {
-                    println!(
-                        "[dry-run] LINK  {} -> {}",
-                        target.display(),
-                        source.display()
-                    );
-                    continue;
-                }
 
-                create_symlink(source, target, file_force)?;
-            }
-            FileAction::Decrypt { source, target } => {
-                let mode = permissions
-                    .map(|p| p.resolve_mode(target, Some(source), target_root))
-                    .unwrap_or(0o600);
-                let had_folded = unfold_folded_ancestors(
-                    source,
-                    target,
-                    target_root,
-                    dry_run,
-                    &mut unfolded_dry_run,
-                )?;
-                if dry_run && had_folded {
-                    println!(
-                        "[dry-run] DECRYPT {} -> {} (mode {:04o})",
-                        source.display(),
-                        target.display(),
-                        mode
-                    );
-                    continue;
-                }
+                    ensure_target_not_inside_source(source, target, target_root)?;
 
-                ensure_target_not_inside_source(source, target, target_root)?;
+                    let mut file_force = force;
+                    let mut file_adopt = adopt;
 
-                let mut file_force = force;
-                let mut file_adopt = adopt;
-                let mut predecrypted = None;
-
-                if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if !meta.file_type().is_symlink() && !meta.is_dir() {
-                        if let Some(secret_type) = detect_secret_type(source) {
-                            if let (Ok(decrypted), Ok(existing)) = (
-                                crate::crypto::decrypt_to_memory(source, secret_type, age_key_file),
-                                std::fs::read(target),
-                            ) {
-                                if existing == decrypted {
-                                    if !target_mode_matches(&meta, mode) {
-                                        if dry_run {
-                                            println!(
-                                                "[dry-run] CHMOD {} (mode {:04o})",
-                                                target.display(),
-                                                mode
-                                            );
-                                        } else {
-                                            heal_target_mode(target, mode)?;
-                                        }
-                                    }
-                                    continue;
+                    if let Ok(meta) = std::fs::symlink_metadata(target) {
+                        if !file_force && !backup && !file_adopt {
+                            if interactive {
+                                match prompt_conflict_resolution(
+                                    action,
+                                    age_key_file,
+                                    reader,
+                                    writer,
+                                    colorize,
+                                )? {
+                                    ConflictResolution::Overwrite => file_force = true,
+                                    ConflictResolution::Adopt => file_adopt = true,
+                                    ConflictResolution::Skip => continue,
                                 }
-                                predecrypted = Some(decrypted);
+                            } else {
+                                return Err(EnstowError::Collision {
+                                    path: target.to_path_buf(),
+                                });
                             }
                         }
-                    }
 
-                    if !file_force && !backup && !file_adopt {
-                        if interactive {
-                            match prompt_conflict_resolution(
-                                action,
-                                age_key_file,
-                                reader,
-                                writer,
-                                colorize,
-                            )? {
-                                ConflictResolution::Overwrite => file_force = true,
-                                ConflictResolution::Adopt => file_adopt = true,
-                                ConflictResolution::Skip => continue,
+                        if file_adopt {
+                            if dry_run {
+                                println!(
+                                    "[dry-run] ADOPT {} -> {}",
+                                    target.display(),
+                                    source.display()
+                                );
+                                println!(
+                                    "[dry-run] LINK  {} -> {}",
+                                    target.display(),
+                                    source.display()
+                                );
+                                continue;
                             }
-                        } else {
-                            return Err(EnstowError::Collision {
-                                path: target.to_path_buf(),
-                            });
-                        }
-                    }
 
-                    if file_adopt {
+                            if let Some(parent) = source.parent() {
+                                std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
+                                    path: parent.to_path_buf(),
+                                    source: e,
+                                })?;
+                            }
+                            std::fs::copy(target, source).map_err(|e| EnstowError::Io {
+                                path: source.to_path_buf(),
+                                source: e,
+                            })?;
+                            #[cfg(unix)]
+                            {
+                                let _ = std::fs::set_permissions(source, meta.permissions());
+                            }
+                            remove_target(target, &meta)?;
+                            create_symlink(source, target, true)?;
+                            continue;
+                        }
+
+                        let backup_dest = resolved_backup_dir
+                            .as_deref()
+                            .map(|bd| compute_backup_dest(target, bd, target_root));
+
                         if dry_run {
+                            if backup {
+                                if let Some(dest) = &backup_dest {
+                                    println!(
+                                        "[dry-run] BACKUP {} -> {}",
+                                        target.display(),
+                                        dest.display()
+                                    );
+                                }
+                            }
                             println!(
-                                "[dry-run] ADOPT {} -> {}",
+                                "[dry-run] LINK  {} -> {}",
                                 target.display(),
                                 source.display()
-                            );
-                            println!(
-                                "[dry-run] DECRYPT {} -> {} (mode {:04o})",
-                                source.display(),
-                                target.display(),
-                                mode
                             );
                             continue;
                         }
 
-                        let plaintext = std::fs::read(target).map_err(|e| EnstowError::Io {
-                            path: target.to_path_buf(),
-                            source: e,
-                        })?;
-                        let resolved_recipients =
-                            crate::crypto::resolve_age_recipients(recipients, age_key_file)?;
-                        crate::crypto::encrypt_bytes_age_with_recipients(
-                            &plaintext,
-                            source,
-                            &resolved_recipients,
-                        )?;
-                        crate::crypto::write_secure_file_with_mode(target, &plaintext, true, mode)?;
+                        if backup {
+                            if let Some(dest) = &backup_dest {
+                                backup_file(target, dest)?;
+                                backed_up_count += 1;
+                            }
+                        } else if file_force {
+                            remove_target(target, &meta)?;
+                        }
+                    } else if dry_run {
+                        println!(
+                            "[dry-run] LINK  {} -> {}",
+                            target.display(),
+                            source.display()
+                        );
                         continue;
                     }
 
-                    let backup_dest =
-                        backup_dir.map(|bd| compute_backup_dest(target, bd, target_root));
-
-                    if dry_run {
-                        if backup {
-                            if let Some(dest) = &backup_dest {
-                                println!(
-                                    "[dry-run] BACKUP {} -> {}",
-                                    target.display(),
-                                    dest.display()
-                                );
-                            }
-                        }
+                    create_symlink(source, target, file_force)?;
+                }
+                FileAction::Decrypt { source, target } => {
+                    let mode = permissions
+                        .map(|p| p.resolve_mode(target, Some(source), target_root))
+                        .unwrap_or(0o600);
+                    let had_folded = unfold_folded_ancestors(
+                        source,
+                        target,
+                        target_root,
+                        dry_run,
+                        &mut unfolded_dry_run,
+                    )?;
+                    if dry_run && had_folded {
                         println!(
                             "[dry-run] DECRYPT {} -> {} (mode {:04o})",
                             source.display(),
@@ -908,41 +814,170 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                         continue;
                     }
 
-                    if backup {
-                        if let Some(dest) = &backup_dest {
-                            backup_file(target, dest)?;
-                        }
-                    } else if file_force {
-                        remove_target(target, &meta)?;
-                    }
-                } else if dry_run {
-                    println!(
-                        "[dry-run] DECRYPT {} -> {} (mode {:04o})",
-                        source.display(),
-                        target.display(),
-                        mode
-                    );
-                    continue;
-                }
+                    ensure_target_not_inside_source(source, target, target_root)?;
 
-                info!("Decrypting {} -> {}", source.display(), target.display());
-                let plaintext = match predecrypted {
-                    Some(bytes) => bytes,
-                    None => {
-                        let secret_type = detect_secret_type(source).ok_or_else(|| {
-                            EnstowError::Config(format!(
-                                "Unrecognized secret format: {}",
-                                source.display()
-                            ))
-                        })?;
-                        crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?
+                    let mut file_force = force;
+                    let mut file_adopt = adopt;
+                    let mut predecrypted = None;
+
+                    if let Ok(meta) = std::fs::symlink_metadata(target) {
+                        if !meta.file_type().is_symlink() && !meta.is_dir() {
+                            if let Some(secret_type) = detect_secret_type(source) {
+                                if let (Ok(decrypted), Ok(existing)) = (
+                                    crate::crypto::decrypt_to_memory(
+                                        source,
+                                        secret_type,
+                                        age_key_file,
+                                    ),
+                                    std::fs::read(target),
+                                ) {
+                                    if existing == decrypted {
+                                        if !target_mode_matches(&meta, mode) {
+                                            if dry_run {
+                                                println!(
+                                                    "[dry-run] CHMOD {} (mode {:04o})",
+                                                    target.display(),
+                                                    mode
+                                                );
+                                            } else {
+                                                heal_target_mode(target, mode)?;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    predecrypted = Some(decrypted);
+                                }
+                            }
+                        }
+
+                        if !file_force && !backup && !file_adopt {
+                            if interactive {
+                                match prompt_conflict_resolution(
+                                    action,
+                                    age_key_file,
+                                    reader,
+                                    writer,
+                                    colorize,
+                                )? {
+                                    ConflictResolution::Overwrite => file_force = true,
+                                    ConflictResolution::Adopt => file_adopt = true,
+                                    ConflictResolution::Skip => continue,
+                                }
+                            } else {
+                                return Err(EnstowError::Collision {
+                                    path: target.to_path_buf(),
+                                });
+                            }
+                        }
+
+                        if file_adopt {
+                            if dry_run {
+                                println!(
+                                    "[dry-run] ADOPT {} -> {}",
+                                    target.display(),
+                                    source.display()
+                                );
+                                println!(
+                                    "[dry-run] DECRYPT {} -> {} (mode {:04o})",
+                                    source.display(),
+                                    target.display(),
+                                    mode
+                                );
+                                continue;
+                            }
+
+                            let plaintext = std::fs::read(target).map_err(|e| EnstowError::Io {
+                                path: target.to_path_buf(),
+                                source: e,
+                            })?;
+                            let resolved_recipients =
+                                crate::crypto::resolve_age_recipients(recipients, age_key_file)?;
+                            crate::crypto::encrypt_bytes_age_with_recipients(
+                                &plaintext,
+                                source,
+                                &resolved_recipients,
+                            )?;
+                            crate::crypto::write_secure_file_with_mode(
+                                target, &plaintext, true, mode,
+                            )?;
+                            continue;
+                        }
+
+                        let backup_dest = resolved_backup_dir
+                            .as_deref()
+                            .map(|bd| compute_backup_dest(target, bd, target_root));
+
+                        if dry_run {
+                            if backup {
+                                if let Some(dest) = &backup_dest {
+                                    println!(
+                                        "[dry-run] BACKUP {} -> {}",
+                                        target.display(),
+                                        dest.display()
+                                    );
+                                }
+                            }
+                            println!(
+                                "[dry-run] DECRYPT {} -> {} (mode {:04o})",
+                                source.display(),
+                                target.display(),
+                                mode
+                            );
+                            continue;
+                        }
+
+                        if backup {
+                            if let Some(dest) = &backup_dest {
+                                backup_file(target, dest)?;
+                                backed_up_count += 1;
+                            }
+                        } else if file_force {
+                            remove_target(target, &meta)?;
+                        }
+                    } else if dry_run {
+                        println!(
+                            "[dry-run] DECRYPT {} -> {} (mode {:04o})",
+                            source.display(),
+                            target.display(),
+                            mode
+                        );
+                        continue;
                     }
-                };
-                crate::crypto::write_secure_file_with_mode(target, &plaintext, file_force, mode)?;
+
+                    info!("Decrypting {} -> {}", source.display(), target.display());
+                    let plaintext = match predecrypted {
+                        Some(bytes) => bytes,
+                        None => {
+                            let secret_type = detect_secret_type(source).ok_or_else(|| {
+                                EnstowError::Config(format!(
+                                    "Unrecognized secret format: {}",
+                                    source.display()
+                                ))
+                            })?;
+                            crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?
+                        }
+                    };
+                    crate::crypto::write_secure_file_with_mode(
+                        target, &plaintext, file_force, mode,
+                    )?;
+                }
             }
         }
+        Ok(())
+    })();
+
+    if !dry_run && backed_up_count > 0 {
+        if let Some(dir) = &resolved_backup_dir {
+            let noun = if backed_up_count == 1 {
+                "file"
+            } else {
+                "files"
+            };
+            println!("Backed up {backed_up_count} {noun} to {}", dir.display());
+        }
     }
-    Ok(())
+
+    result
 }
 
 /// Overwrite regular file content with zeros and flush to disk.
@@ -1413,6 +1448,80 @@ fn remove_target(target: &Path, meta: &std::fs::Metadata) -> Result<(), EnstowEr
             source: e,
         })
     }
+}
+
+/// Placeholder token expanded to a `YYYYMMDD_HHMMSS` UTC run timestamp in backup directory paths.
+pub const BACKUP_TIMESTAMP_PLACEHOLDER: &str = "{timestamp}";
+
+/// Format a `SystemTime` as a sortable `YYYYMMDD_HHMMSS` UTC timestamp without external crates.
+pub fn format_backup_timestamp(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let hour = rem / 3_600;
+    let minute = (rem % 3_600) / 60;
+    let second = rem % 60;
+
+    // Howard Hinnant's civil-from-days algorithm (days since 1970-01-01)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    format!("{year:04}{month:02}{day:02}_{hour:02}{minute:02}{second:02}")
+}
+
+fn expand_backup_timestamp(template: &Path, replacement: &str) -> Option<PathBuf> {
+    let mut replaced = false;
+    let mut out = PathBuf::new();
+    for comp in template.components() {
+        match comp {
+            std::path::Component::Normal(os) => {
+                if let Some(s) = os.to_str() {
+                    if s.contains(BACKUP_TIMESTAMP_PLACEHOLDER) {
+                        replaced = true;
+                        out.push(s.replace(BACKUP_TIMESTAMP_PLACEHOLDER, replacement));
+                        continue;
+                    }
+                }
+                out.push(os);
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    replaced.then_some(out)
+}
+
+/// Resolve the backup directory for a single run.
+///
+/// If `template` contains `{timestamp}`, it is replaced with `timestamp` (and disambiguated with
+/// `_1`, `_2`, ... if that directory already exists on disk). Paths without `{timestamp}` are
+/// returned unchanged.
+pub fn resolve_backup_dir_for_run(template: &Path, timestamp: &str) -> PathBuf {
+    let Some(candidate) = expand_backup_timestamp(template, timestamp) else {
+        return template.to_path_buf();
+    };
+    if std::fs::symlink_metadata(&candidate).is_err() {
+        return candidate;
+    }
+    for suffix in 1u64.. {
+        let stamped = format!("{timestamp}_{suffix}");
+        if let Some(next) = expand_backup_timestamp(template, &stamped) {
+            if std::fs::symlink_metadata(&next).is_err() {
+                return next;
+            }
+        }
+    }
+    candidate
 }
 
 fn compute_backup_dest(target: &Path, backup_dir: &Path, target_root: Option<&Path>) -> PathBuf {
@@ -1888,6 +1997,70 @@ mod tests {
         // No root
         let dest_no_root = compute_backup_dest(target, backup_dir, None);
         assert_eq!(dest_no_root, PathBuf::from("/backup").join("cfg.toml"));
+    }
+
+    #[test]
+    fn test_format_backup_timestamp() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let at = |secs: u64| format_backup_timestamp(UNIX_EPOCH + Duration::from_secs(secs));
+        // 1970-01-01 00:00:00 UTC
+        assert_eq!(at(0), "19700101_000000");
+        // 2000-02-29 12:34:56 UTC (400-year leap day)
+        assert_eq!(at(951_827_696), "20000229_123456");
+        // 2024-02-29 23:59:59 UTC (leap day)
+        assert_eq!(at(1_709_251_199), "20240229_235959");
+        // 2025-12-31 23:59:59 UTC (year boundary)
+        assert_eq!(at(1_767_225_599), "20251231_235959");
+        // 2026-01-01 00:00:00 UTC (new year)
+        assert_eq!(at(1_767_225_600), "20260101_000000");
+        // 2026-11-22 00:45:00 UTC
+        assert_eq!(at(1_795_308_300), "20261122_004500");
+        // 2100-03-01 00:00:00 UTC (non-leap century year)
+        assert_eq!(at(4_107_542_400), "21000301_000000");
+    }
+
+    #[test]
+    fn test_resolve_backup_dir_for_run() {
+        let dir = tempdir().unwrap();
+
+        // Literal path without {timestamp} stays untouched even when it already exists
+        let literal = dir.path().join("literal");
+        std::fs::create_dir_all(&literal).unwrap();
+        assert_eq!(
+            resolve_backup_dir_for_run(&literal, "20261122_004500"),
+            literal
+        );
+
+        // Template with {timestamp} expands and disambiguates same-second collisions
+        let template = dir.path().join(".enstow-backup").join("{timestamp}");
+        let first = resolve_backup_dir_for_run(&template, "20261122_004500");
+        assert_eq!(
+            first,
+            dir.path().join(".enstow-backup").join("20261122_004500")
+        );
+
+        std::fs::create_dir_all(&first).unwrap();
+        let second = resolve_backup_dir_for_run(&template, "20261122_004500");
+        assert_eq!(
+            second,
+            dir.path().join(".enstow-backup").join("20261122_004500_1")
+        );
+
+        std::fs::create_dir_all(&second).unwrap();
+        let third = resolve_backup_dir_for_run(&template, "20261122_004500");
+        assert_eq!(
+            third,
+            dir.path().join(".enstow-backup").join("20261122_004500_2")
+        );
+
+        // Inline and nested {timestamp} placeholder
+        let nested_template = dir.path().join("run-{timestamp}").join("nested");
+        let n1 = resolve_backup_dir_for_run(&nested_template, "20261122_004500");
+        assert_eq!(n1, dir.path().join("run-20261122_004500").join("nested"));
+        std::fs::create_dir_all(&n1).unwrap();
+        let n2 = resolve_backup_dir_for_run(&nested_template, "20261122_004500");
+        assert_eq!(n2, dir.path().join("run-20261122_004500_1").join("nested"));
     }
 
     #[test]

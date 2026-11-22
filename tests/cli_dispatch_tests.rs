@@ -538,3 +538,207 @@ fn test_cli_repo_local_auto_discovery_and_cross_dir_config() {
     assert!(fs::symlink_metadata(tgt3.join(".bashrc")).is_ok());
     assert!(fs::symlink_metadata(tgt3.join(".extrarc")).is_err());
 }
+
+#[test]
+fn test_cli_timestamped_backup_runs_and_summary() {
+    let bin = env!("CARGO_BIN_EXE_enstow");
+
+    match Command::new(bin).arg("--version").output() {
+        Ok(output) if output.status.success() => {}
+        _ => {
+            eprintln!("Skipping CLI backup test: target binary cannot be executed");
+            return;
+        }
+    }
+
+    let temp = tempdir().unwrap();
+    let xdg_dir = temp.path().join("xdg");
+    let src = temp.path().join("src");
+    let tgt = temp.path().join("tgt");
+    fs::create_dir_all(&xdg_dir).unwrap();
+    fs::create_dir_all(&src).unwrap();
+    fs::create_dir_all(&tgt).unwrap();
+
+    fs::write(src.join("app.conf"), "managed_app\n").unwrap();
+    fs::write(src.join("extra.conf"), "managed_extra\n").unwrap();
+
+    let backup_root = tgt.join(".enstow-backup");
+
+    // 1. Zero conflicts -> no backup dir created, no backup summary printed
+    let out = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_BACKUP")
+        .env_remove("ENSTOW_BACKUP_DIR")
+        .args([
+            "apply",
+            "--backup",
+            "-s",
+            src.to_str().unwrap(),
+            "-t",
+            tgt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "zero-conflict apply failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!backup_root.exists());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("Backed up"),
+        "unexpected backup summary on zero conflicts:\n{stdout}"
+    );
+
+    // 2. Dry-run with conflict -> no backup dir created, dry-run shows timestamped path, no summary
+    fs::remove_file(tgt.join("app.conf")).unwrap();
+    fs::write(tgt.join("app.conf"), "conflict_v1\n").unwrap();
+    let out = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_BACKUP")
+        .env_remove("ENSTOW_BACKUP_DIR")
+        .args([
+            "apply",
+            "--backup",
+            "--dry-run",
+            "-s",
+            src.to_str().unwrap(),
+            "-t",
+            tgt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(!backup_root.exists());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[dry-run] BACKUP"),
+        "expected dry-run backup preview:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("{timestamp}"),
+        "dry-run should expand {{timestamp}} placeholder:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Backed up"),
+        "dry-run should not print real backup summary:\n{stdout}"
+    );
+
+    // 3. First real --backup run (1 conflicting file)
+    let out1 = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_BACKUP")
+        .env_remove("ENSTOW_BACKUP_DIR")
+        .args([
+            "apply",
+            "--backup",
+            "-s",
+            src.to_str().unwrap(),
+            "-t",
+            tgt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out1.status.success(),
+        "run 1 apply failed: {}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+    let stdout1 = String::from_utf8_lossy(&out1.stdout);
+    let summary1 = stdout1
+        .lines()
+        .find(|l| l.starts_with("Backed up 1 file to "))
+        .unwrap_or_else(|| panic!("missing backup summary in run 1:\n{stdout1}"));
+    let dir1 = std::path::PathBuf::from(summary1.trim_start_matches("Backed up 1 file to "));
+    assert_eq!(dir1.parent(), Some(backup_root.as_path()));
+    assert_eq!(
+        fs::read_to_string(dir1.join("app.conf")).unwrap(),
+        "conflict_v1\n"
+    );
+
+    // 4. Second real --backup run (2 conflicting files) preserves run 1 and uses a new subdir
+    fs::remove_file(tgt.join("app.conf")).unwrap();
+    fs::write(tgt.join("app.conf"), "conflict_v2\n").unwrap();
+    fs::remove_file(tgt.join("extra.conf")).unwrap();
+    fs::write(tgt.join("extra.conf"), "extra_v1\n").unwrap();
+    let out2 = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_BACKUP")
+        .env_remove("ENSTOW_BACKUP_DIR")
+        .args([
+            "apply",
+            "--backup",
+            "-s",
+            src.to_str().unwrap(),
+            "-t",
+            tgt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out2.status.success(),
+        "run 2 apply failed: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    let summary2 = stdout2
+        .lines()
+        .find(|l| l.starts_with("Backed up 2 files to "))
+        .unwrap_or_else(|| panic!("missing backup summary in run 2:\n{stdout2}"));
+    let dir2 = std::path::PathBuf::from(summary2.trim_start_matches("Backed up 2 files to "));
+    assert_eq!(dir2.parent(), Some(backup_root.as_path()));
+    assert_ne!(dir1, dir2);
+    assert_eq!(
+        fs::read_to_string(dir1.join("app.conf")).unwrap(),
+        "conflict_v1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir2.join("app.conf")).unwrap(),
+        "conflict_v2\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir2.join("extra.conf")).unwrap(),
+        "extra_v1\n"
+    );
+
+    // 5. Explicit --backup-dir without {timestamp} stays literal (no extra timestamp subdir)
+    let literal_dir = temp.path().join("explicit-literal-backup");
+    fs::remove_file(tgt.join("app.conf")).unwrap();
+    fs::write(tgt.join("app.conf"), "literal_v1\n").unwrap();
+    let out3 = Command::new(bin)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_BACKUP")
+        .env_remove("ENSTOW_BACKUP_DIR")
+        .args([
+            "apply",
+            "--backup",
+            "--backup-dir",
+            literal_dir.to_str().unwrap(),
+            "-s",
+            src.to_str().unwrap(),
+            "-t",
+            tgt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out3.status.success(),
+        "explicit literal backup failed: {}",
+        String::from_utf8_lossy(&out3.stderr)
+    );
+    let stdout3 = String::from_utf8_lossy(&out3.stdout);
+    assert!(
+        stdout3.contains(&format!("Backed up 1 file to {}", literal_dir.display())),
+        "expected literal backup dir in summary:\n{stdout3}"
+    );
+    assert_eq!(
+        fs::read_to_string(literal_dir.join("app.conf")).unwrap(),
+        "literal_v1\n"
+    );
+}
