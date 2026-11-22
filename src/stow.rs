@@ -1225,6 +1225,7 @@ pub fn find_folded_ancestor(
     target: &Path,
     target_root: Option<&Path>,
 ) -> Option<(PathBuf, PathBuf)> {
+    let norm_raw_source = normalize_path(source);
     let norm_source = normalize_path(
         &source
             .canonicalize()
@@ -1236,24 +1237,40 @@ pub fn find_folded_ancestor(
         let norm_root = normalize_path(root);
         let canon_root = root.canonicalize().ok().map(|c| normalize_path(&c));
         let mut cur = target.parent();
+        let mut reached_root = false;
         while let Some(dir) = cur {
             let norm_dir = normalize_path(dir);
             if dir == root || norm_dir == norm_root {
+                reached_root = true;
                 break;
             }
             if let Some(ref cr) = canon_root {
                 if dir.canonicalize().ok().map(|c| normalize_path(&c)).as_ref() == Some(cr) {
+                    reached_root = true;
                     break;
                 }
             }
             ancestors.push(dir.to_path_buf());
             cur = dir.parent();
         }
+        if !reached_root {
+            ancestors.clear();
+        }
     } else {
         let mut cur = target.parent();
         let mut src_cur = source.parent();
         while let (Some(dir), Some(sdir)) = (cur, src_cur) {
-            if dir.file_name() != sdir.file_name() {
+            let Some(dir_name) = dir.file_name() else {
+                break;
+            };
+            if sdir.file_name() != Some(dir_name) {
+                break;
+            }
+            let norm_dir = normalize_path(dir);
+            if norm_dir == normalize_path(sdir)
+                || (norm_dir.is_absolute()
+                    && norm_dir.parent().and_then(|p| p.file_name()).is_none())
+            {
                 break;
             }
             ancestors.push(dir.to_path_buf());
@@ -1264,6 +1281,9 @@ pub fn find_folded_ancestor(
 
     ancestors.reverse();
     for anc in ancestors {
+        if norm_raw_source.starts_with(normalize_path(&anc)) {
+            continue;
+        }
         if let Ok(meta) = std::fs::symlink_metadata(&anc) {
             if meta.file_type().is_symlink() {
                 if let Ok(dest) = std::fs::read_link(&anc) {
@@ -1940,6 +1960,68 @@ mod tests {
         create_symlink(&src, &tgt, true).unwrap();
         let statuses = check_status(&[action], None).unwrap();
         assert_eq!(statuses[0].status, EntryStatus::Synced);
+    }
+
+    #[test]
+    fn test_find_folded_ancestor_ignores_shared_symlinked_root() {
+        let dir = tempdir().unwrap();
+        let real_root = dir.path().join("real");
+        let real_sub = real_root.join("sub");
+        std::fs::create_dir_all(&real_sub).unwrap();
+
+        let alias_root = dir.path().join("alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_root, &alias_root).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_root, &alias_root).unwrap();
+
+        // Shared symlinked root (mirrors macOS /var -> /private/var)
+        let src = alias_root.join("sub").join("source.txt");
+        let tgt = alias_root.join("sub").join("target.txt");
+        std::fs::write(&src, "content").unwrap();
+
+        assert!(find_folded_ancestor(&src, &tgt, None).is_none());
+        assert!(create_symlink(&src, &tgt, false).is_ok());
+        assert!(is_symlink_to(&tgt, &src));
+
+        std::fs::remove_file(&tgt).unwrap();
+        let action = FileAction::Symlink {
+            source: src.clone(),
+            target: tgt.clone(),
+        };
+        let statuses = check_status(&[action], None).unwrap();
+        assert_eq!(statuses[0].status, EntryStatus::Missing);
+
+        // Unrelated target_root must not walk past root into shared symlinked ancestors
+        let unrelated_root = dir.path().join("unrelated");
+        std::fs::create_dir_all(&unrelated_root).unwrap();
+        assert!(find_folded_ancestor(&src, &tgt, Some(&unrelated_root)).is_none());
+
+        // Real legacy folded directory symlink inside the symlinked root is still detected
+        let pkg_dir = alias_root
+            .join("dotfiles")
+            .join("pkg")
+            .join(".config")
+            .join("app");
+        let home_root = alias_root.join("home");
+        let home_cfg = home_root.join(".config");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::create_dir_all(&home_cfg).unwrap();
+        let folded = home_cfg.join("app");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&pkg_dir, &folded).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&pkg_dir, &folded).unwrap();
+
+        let pkg_src = pkg_dir.join("app.conf");
+        std::fs::write(&pkg_src, "k=v\n").unwrap();
+        let home_tgt = folded.join("app.conf");
+        let canon_pkg_src = pkg_src.canonicalize().unwrap();
+
+        assert!(find_folded_ancestor(&pkg_src, &home_tgt, None).is_some());
+        assert!(find_folded_ancestor(&pkg_src, &home_tgt, Some(&home_root)).is_some());
+        assert!(find_folded_ancestor(&canon_pkg_src, &home_tgt, None).is_some());
+        assert!(find_folded_ancestor(&canon_pkg_src, &home_tgt, Some(&home_root)).is_some());
     }
 
     #[test]
