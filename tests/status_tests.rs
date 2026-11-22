@@ -1,10 +1,12 @@
 use age::secrecy::ExposeSecret;
 use age::Recipient;
-use enstow::cli::CommonArgs;
+use clap::Parser;
+use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::stow::{check_status, plan_stow, EntryStatus};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use tempfile::tempdir;
 
 fn create_test_age_key_and_encrypted_file(key_path: &Path, secret_path: &Path, plaintext: &[u8]) {
@@ -223,4 +225,103 @@ fn test_status_secret_conflict_missing_and_action_getters() {
     };
     assert_eq!(sym_action.source(), dummy_link_src.as_path());
     assert_eq!(sym_action.target(), dir_tgt.as_path());
+}
+
+#[test]
+fn test_cli_parsing_status_check_and_exit_code_alias() {
+    let cli = Cli::try_parse_from(["enstow", "status", "--check", "--json"]).unwrap();
+    match cli.command {
+        Some(Commands::Status { json, check, .. }) => {
+            assert!(json);
+            assert!(check);
+        }
+        other => panic!("Expected Status, got {:?}", other),
+    }
+
+    let cli_alias = Cli::try_parse_from(["enstow", "status", "--exit-code"]).unwrap();
+    match cli_alias.command {
+        Some(Commands::Status { json, check, .. }) => {
+            assert!(!json);
+            assert!(check);
+        }
+        other => panic!("Expected Status, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_cli_status_check_exit_codes() {
+    let bin = env!("CARGO_BIN_EXE_enstow");
+    match Command::new(bin).arg("--version").output() {
+        Ok(o) if o.status.success() => {}
+        _ => return,
+    }
+
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+
+    fs::write(source_dir.path().join(".bashrc"), "export OK=1\n").unwrap();
+    let key_file = key_dir.path().join("key.txt");
+    let secret_src = source_dir.path().join(".tokens.age");
+    create_test_age_key_and_encrypted_file(&key_file, &secret_src, b"TOKEN=orig\n");
+
+    let run_status = |extra: &[&str]| {
+        Command::new(bin)
+            .env_remove("ENSTOW_CONFIG")
+            .args([
+                "status",
+                "-s",
+                source_dir.path().to_str().unwrap(),
+                "-t",
+                target_dir.path().to_str().unwrap(),
+                "--age-key-file",
+                key_file.to_str().unwrap(),
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+
+    // 1. Missing entries: plain `status` exits 0; `--check` and `--exit-code --json` exit 1
+    assert!(run_status(&[]).status.success());
+    let missing_check = run_status(&["--check"]);
+    assert!(!missing_check.status.success());
+    assert!(String::from_utf8_lossy(&missing_check.stdout).contains("MISSING"));
+
+    let missing_json = run_status(&["--exit-code", "--json"]);
+    assert!(!missing_json.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&missing_json.stdout).unwrap();
+    assert!(parsed.is_array());
+
+    // 2. Apply all -> `status --check` and `status --check --json` exit 0
+    let apply_out = Command::new(bin)
+        .env_remove("ENSTOW_CONFIG")
+        .args([
+            "apply",
+            "-s",
+            source_dir.path().to_str().unwrap(),
+            "-t",
+            target_dir.path().to_str().unwrap(),
+            "--age-key-file",
+            key_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(apply_out.status.success());
+    assert!(run_status(&["--check"]).status.success());
+    assert!(run_status(&["--check", "--json"]).status.success());
+
+    // 3. Drifted secret (`MODIFIED`) -> `--check` exits 1
+    fs::write(target_dir.path().join(".tokens"), "TOKEN=drifted\n").unwrap();
+    let drifted = run_status(&["--check"]);
+    assert!(!drifted.status.success());
+    assert!(String::from_utf8_lossy(&drifted.stdout).contains("MODIFIED"));
+
+    // 4. Unmanaged file conflict (`CONFLICT`) -> `--check` exits 1
+    fs::write(target_dir.path().join(".tokens"), "TOKEN=orig\n").unwrap();
+    fs::remove_file(target_dir.path().join(".bashrc")).unwrap();
+    fs::write(target_dir.path().join(".bashrc"), "unmanaged\n").unwrap();
+    let conflict = run_status(&["--check"]);
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stdout).contains("CONFLICT"));
 }

@@ -316,6 +316,18 @@ pub enum Commands {
         /// Custom editor command to use instead of $ENSTOW_EDITOR, $VISUAL, or $EDITOR
         #[arg(long)]
         editor: Option<String>,
+
+        /// Re-deploy the updated secret to its target path after saving
+        #[arg(long)]
+        apply: bool,
+
+        /// Source directory containing dotfile packages (used with --apply)
+        #[arg(short, long)]
+        source: Option<PathBuf>,
+
+        /// Target directory where decrypted secret is deployed (used with --apply, defaults to $HOME)
+        #[arg(short, long)]
+        target: Option<PathBuf>,
     },
     /// Re-encrypt age secret files with updated recipients across packages
     Rekey {
@@ -355,6 +367,10 @@ pub enum Commands {
         /// Output status in JSON format ($ENSTOW_JSON)
         #[arg(long)]
         json: bool,
+
+        /// Exit with non-zero status code if any entry is not synced
+        #[arg(long, alias = "exit-code")]
+        check: bool,
     },
     /// Show diff between dotfiles and target destination
     Diff {
@@ -378,6 +394,10 @@ pub enum Commands {
         /// Output report in JSON format ($ENSTOW_JSON)
         #[arg(long)]
         json: bool,
+
+        /// Inspect git staged files for plaintext secrets, .env files, and credential leaks (for pre-commit hooks)
+        #[arg(long)]
+        staged: bool,
     },
     /// Generate UNIX roff man page
     Man,

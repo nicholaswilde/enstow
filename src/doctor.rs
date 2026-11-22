@@ -80,7 +80,149 @@ pub fn run_doctor(
         permissions,
     ));
     checks.extend(check_decryption_prerequisites(args, &actions));
+    checks.extend(check_plaintext_secret_guard(args, &actions));
     checks.extend(check_leak_scan(&actions));
+
+    Ok(DoctorReport::new(checks))
+}
+
+/// Inspect git staged files (`git diff --cached --name-only --diff-filter=ACM`) for
+/// plaintext counterparts of encrypted files, `.env` files, and credential leaks.
+pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError> {
+    let top_out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(source_dir)
+        .output()
+        .map_err(|e| {
+            EnstowError::Config(format!(
+                "Failed to invoke git in '{}': {e}",
+                source_dir.display()
+            ))
+        })?;
+    if !top_out.status.success() {
+        let stderr = String::from_utf8_lossy(&top_out.stderr);
+        return Err(EnstowError::Config(format!(
+            "Directory '{}' is not inside a git repository: {}",
+            source_dir.display(),
+            stderr.trim()
+        )));
+    }
+    let git_root_str = String::from_utf8_lossy(&top_out.stdout).trim().to_string();
+    let git_root = PathBuf::from(&git_root_str);
+    let canon_root = normalize_path(&git_root.canonicalize().unwrap_or_else(|_| git_root.clone()));
+
+    let diff_out = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"])
+        .current_dir(&git_root)
+        .output()
+        .map_err(|e| {
+            EnstowError::Config(format!(
+                "Failed to list staged files in '{}': {e}",
+                git_root.display()
+            ))
+        })?;
+    if !diff_out.status.success() {
+        let stderr = String::from_utf8_lossy(&diff_out.stderr);
+        return Err(EnstowError::Config(format!(
+            "Failed to inspect git index in '{}': {}",
+            git_root.display(),
+            stderr.trim()
+        )));
+    }
+
+    let staged_rel_paths: Vec<String> = diff_out
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+
+    let counterparts: HashMap<PathBuf, PathBuf> =
+        collect_encrypted_counterparts(std::slice::from_ref(&canon_root))
+            .into_iter()
+            .map(|(enc, plain)| (normalize_path(&plain), enc))
+            .collect();
+
+    let mut checks = Vec::new();
+    for rel in &staged_rel_paths {
+        let full_path = rel
+            .split('/')
+            .fold(canon_root.clone(), |acc, part| acc.join(part));
+        let norm_full = normalize_path(&full_path);
+
+        // Encrypted files themselves (.age, .sops.*) are safe to stage
+        if matches!(
+            crypto::detect_secret_type(&full_path),
+            Some(SecretType::Age | SecretType::Sops)
+        ) {
+            continue;
+        }
+
+        if let Some(encrypted_src) = counterparts.get(&norm_full) {
+            checks.push(DoctorCheck {
+                category: "secret_guard".into(),
+                severity: CheckSeverity::Error,
+                message: format!(
+                    "Staged plaintext secret '{}' has encrypted counterpart '{}' — encrypt instead of committing plaintext",
+                    rel,
+                    encrypted_src.display()
+                ),
+                path: Some(full_path.clone()),
+            });
+        }
+
+        if is_forbidden_dotenv(&full_path) {
+            checks.push(DoctorCheck {
+                category: "secret_guard".into(),
+                severity: CheckSeverity::Error,
+                message: format!(
+                    "Staged unencrypted .env file '{}' — add to .gitignore or encrypt with 'enstow encrypt'",
+                    rel
+                ),
+                path: Some(full_path.clone()),
+            });
+        }
+
+        // Scan staged blob content (fallback to working tree file if git show fails)
+        let staged_bytes = std::process::Command::new("git")
+            .args(["show", &format!(":{rel}")])
+            .current_dir(&git_root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+            .or_else(|| fs::read(&full_path).ok());
+
+        if let Some(bytes) = staged_bytes {
+            if bytes.len() <= 1_000_000 {
+                if let Ok(content) = std::str::from_utf8(&bytes) {
+                    if let Some(desc) = scan_content_for_leaks(content) {
+                        checks.push(DoctorCheck {
+                            category: "leak_scan".into(),
+                            severity: CheckSeverity::Error,
+                            message: format!(
+                                "Staged credential leak detected in '{}': {}",
+                                rel, desc
+                            ),
+                            path: Some(full_path),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if checks.is_empty() {
+        checks.push(DoctorCheck {
+            category: "secret_guard".into(),
+            severity: CheckSeverity::Ok,
+            message: format!(
+                "No plaintext secrets or credential leaks found in {} staged file(s)",
+                staged_rel_paths.len()
+            ),
+            path: None,
+        });
+    }
 
     Ok(DoctorReport::new(checks))
 }
@@ -517,6 +659,225 @@ fn check_decryption_prerequisites(args: &CommonArgs, actions: &[FileAction]) -> 
             category: "decryption_prerequisites".into(),
             severity: CheckSeverity::Ok,
             message: "No encrypted secrets or .sops.yaml found in dotfiles".into(),
+            path: None,
+        });
+    }
+
+    checks
+}
+
+fn find_git_root(start: &Path) -> Option<PathBuf> {
+    let start_dir = if start.is_dir() {
+        start
+    } else {
+        start.parent()?
+    };
+    let mut cur = start_dir
+        .canonicalize()
+        .unwrap_or_else(|_| start_dir.to_path_buf());
+    loop {
+        if cur.join(".git").exists() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+fn is_path_gitignored(git_root: &Path, target_path: &Path) -> bool {
+    let norm_root = normalize_path(
+        &git_root
+            .canonicalize()
+            .unwrap_or_else(|_| git_root.to_path_buf()),
+    );
+    let aligned_target = target_path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .and_then(|cp| target_path.file_name().map(|f| normalize_path(&cp).join(f)))
+        .unwrap_or_else(|| normalize_path(target_path));
+
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(&norm_root);
+    let mut dirs = Vec::new();
+    let mut cur = aligned_target.parent();
+    while let Some(d) = cur {
+        dirs.push(d.to_path_buf());
+        if normalize_path(d) == norm_root {
+            break;
+        }
+        cur = d.parent();
+    }
+    dirs.reverse();
+    for dir in dirs {
+        let gi_file = dir.join(".gitignore");
+        if gi_file.is_file() {
+            builder.add(gi_file);
+        }
+    }
+
+    match builder.build() {
+        Ok(gi) => gi
+            .matched_path_or_any_parents(&aligned_target, false)
+            .is_ignore(),
+        Err(_) => false,
+    }
+}
+
+fn is_forbidden_dotenv(path: &Path) -> bool {
+    if crypto::detect_secret_type(path).is_some() {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name == ".env" || name.ends_with(".env") {
+        return true;
+    }
+    if let Some(suffix) = name.strip_prefix(".env.") {
+        let lower = suffix.to_ascii_lowercase();
+        return !matches!(lower.as_str(), "example" | "sample" | "template" | "dist");
+    }
+    false
+}
+
+/// Collect `(encrypted_path, plaintext_sibling_path)` pairs for `.age` and `.sops.*` files
+/// under `roots`, excluding exact `.sops.yaml` config files whose plaintext name equals themselves.
+fn collect_encrypted_counterparts(roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::new();
+
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
+            let name = e.file_name().to_str().unwrap_or_default();
+            if e.file_type().is_dir() {
+                name != ".git" && !is_stale_scan_ignored_dir(name)
+            } else {
+                true
+            }
+        }) {
+            let Ok(entry) = entry else { continue };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !matches!(
+                crypto::detect_secret_type(path),
+                Some(SecretType::Age | SecretType::Sops)
+            ) {
+                continue;
+            }
+            let Some(plain_name) = crypto::target_plaintext_name(path) else {
+                continue;
+            };
+            let enc_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if plain_name == enc_name {
+                continue;
+            }
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            let sibling = parent.join(&plain_name);
+            let norm_enc = normalize_path(path);
+            if seen.insert(norm_enc) {
+                pairs.push((path.to_path_buf(), sibling));
+            }
+        }
+    }
+
+    pairs
+}
+
+fn check_plaintext_secret_guard(args: &CommonArgs, actions: &[FileAction]) -> Vec<DoctorCheck> {
+    let source_root = normalize_path(
+        &args
+            .source_path()
+            .canonicalize()
+            .unwrap_or_else(|_| args.source_path().to_path_buf()),
+    );
+
+    let roots: Vec<PathBuf> = if args.packages.is_empty() {
+        vec![source_root.clone()]
+    } else {
+        args.packages
+            .iter()
+            .map(|p| source_root.join(p))
+            .filter(|p| p.is_dir())
+            .collect()
+    };
+
+    let mut pairs = collect_encrypted_counterparts(&roots);
+    let mut seen: HashSet<PathBuf> = pairs.iter().map(|(e, _)| normalize_path(e)).collect();
+
+    for action in actions {
+        if let FileAction::Decrypt { source, .. } = action {
+            if matches!(
+                crypto::detect_secret_type(source),
+                Some(SecretType::Age | SecretType::Sops)
+            ) {
+                if let (Some(plain_name), Some(parent)) =
+                    (crypto::target_plaintext_name(source), source.parent())
+                {
+                    let enc_name = source
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default();
+                    if plain_name != enc_name && seen.insert(normalize_path(source)) {
+                        pairs.push((source.clone(), parent.join(plain_name)));
+                    }
+                }
+            }
+        }
+    }
+
+    let git_root = find_git_root(&source_root);
+    let mut checks = Vec::new();
+    let mut issues_found = false;
+
+    for (encrypted, sibling) in &pairs {
+        if sibling.exists() || fs::symlink_metadata(sibling).is_ok() {
+            issues_found = true;
+            checks.push(DoctorCheck {
+                category: "secret_guard".into(),
+                severity: CheckSeverity::Error,
+                message: format!(
+                    "Plaintext secret sibling exists in source repository alongside encrypted file: {} (encrypted: {})",
+                    sibling.display(),
+                    encrypted.display()
+                ),
+                path: Some(sibling.clone()),
+            });
+        }
+
+        if let Some(ref gr) = git_root {
+            if !is_path_gitignored(gr, sibling) {
+                issues_found = true;
+                checks.push(DoctorCheck {
+                    category: "secret_guard".into(),
+                    severity: CheckSeverity::Warning,
+                    message: format!(
+                        "Plaintext secret counterpart '{}' is not ignored by .gitignore",
+                        sibling.display()
+                    ),
+                    path: Some(sibling.clone()),
+                });
+            }
+        }
+    }
+
+    if !issues_found && !pairs.is_empty() {
+        checks.push(DoctorCheck {
+            category: "secret_guard".into(),
+            severity: CheckSeverity::Ok,
+            message: format!(
+                "Secret guard verified across {} encrypted secret file(s)",
+                pairs.len()
+            ),
             path: None,
         });
     }

@@ -1,10 +1,12 @@
 use age::secrecy::ExposeSecret;
 use age::Recipient;
-use enstow::cli::CommonArgs;
-use enstow::doctor::{run_doctor, CheckSeverity, DoctorReport};
+use clap::Parser;
+use enstow::cli::{Cli, Commands, CommonArgs};
+use enstow::doctor::{run_doctor, run_doctor_staged, CheckSeverity, DoctorReport};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use tempfile::tempdir;
 
 fn create_test_age_key_and_encrypted_file(key_path: &Path, secret_path: &Path, plaintext: &[u8]) {
@@ -487,4 +489,239 @@ fn test_doctor_reports_legacy_folded_directory_symlink() {
         .filter(|c| c.category == "symlink_health" && c.message.contains("Stale symlink"))
         .collect();
     assert!(stale_warnings.is_empty(), "checks: {:?}", report.checks);
+}
+
+#[test]
+fn test_cli_parsing_doctor_staged() {
+    let cli = Cli::try_parse_from(["enstow", "doctor", "--staged", "--json"]).unwrap();
+    match cli.command {
+        Some(Commands::Doctor { json, staged, .. }) => {
+            assert!(json);
+            assert!(staged);
+        }
+        other => panic!("Expected Doctor command, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_doctor_plaintext_sibling_detected_even_when_enstowignored() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+
+    let pkg_dir = source_dir.path().join("bash");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    let key_file = key_dir.path().join("keys.txt");
+    let secret_age = pkg_dir.join(".tokens.age");
+    create_test_age_key_and_encrypted_file(&key_file, &secret_age, b"export TOKEN=secret\n");
+
+    // Plaintext sibling ignored by .enstowignore MUST still be caught by doctor
+    fs::write(pkg_dir.join(".enstowignore"), ".tokens\n").unwrap();
+    let plaintext_sibling = pkg_dir.join(".tokens");
+    fs::write(&plaintext_sibling, "export TOKEN=secret\n").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        age_key_file: Some(key_file.clone()),
+        packages: vec!["bash".to_string()],
+        ..Default::default()
+    };
+
+    let report = run_doctor(&args, None).unwrap();
+    assert!(!report.healthy, "expected unhealthy report: {:?}", report);
+    assert!(
+        report.checks.iter().any(|c| {
+            c.category == "secret_guard"
+                && c.severity == CheckSeverity::Error
+                && c.message.contains(".tokens")
+        }),
+        "checks: {:?}",
+        report.checks
+    );
+
+    // Removing the plaintext sibling makes doctor healthy again
+    fs::remove_file(&plaintext_sibling).unwrap();
+    let clean_report = run_doctor(&args, None).unwrap();
+    assert!(
+        clean_report.healthy,
+        "expected healthy report: {:?}",
+        clean_report
+    );
+}
+
+#[test]
+fn test_doctor_warns_when_plaintext_counterpart_not_gitignored() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+
+    // Simulate a git repository root
+    fs::create_dir_all(source_dir.path().join(".git")).unwrap();
+
+    let pkg_dir = source_dir.path().join("bash");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    let key_file = key_dir.path().join("keys.txt");
+    let secret_age = pkg_dir.join(".tokens.age");
+    create_test_age_key_and_encrypted_file(&key_file, &secret_age, b"export TOKEN=secret\n");
+
+    // Exact .sops.yaml must NOT falsely warn or error against itself
+    fs::write(source_dir.path().join(".sops.yaml"), "creation_rules: []\n").unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        age_key_file: Some(key_file.clone()),
+        packages: vec!["bash".to_string()],
+        ..Default::default()
+    };
+
+    // 1. No .gitignore -> warns about unignored plaintext counterpart
+    let report = run_doctor(&args, None).unwrap();
+    assert!(
+        report.checks.iter().any(|c| {
+            c.category == "secret_guard"
+                && c.severity == CheckSeverity::Warning
+                && c.message.contains(".gitignore")
+                && c.message.contains(".tokens")
+        }),
+        "checks: {:?}",
+        report.checks
+    );
+    assert!(
+        !report
+            .checks
+            .iter()
+            .any(|c| c.category == "secret_guard" && c.message.contains(".sops.yaml")),
+        "exact .sops.yaml must not flag itself: {:?}",
+        report.checks
+    );
+
+    // 2. Adding .tokens to .gitignore clears the warning
+    fs::write(source_dir.path().join(".gitignore"), ".tokens\n").unwrap();
+    let clean_report = run_doctor(&args, None).unwrap();
+    assert!(
+        !clean_report
+            .checks
+            .iter()
+            .any(|c| c.category == "secret_guard" && c.severity != CheckSeverity::Ok),
+        "expected no secret_guard warnings/errors: {:?}",
+        clean_report.checks
+    );
+}
+
+#[test]
+fn test_doctor_staged_blocks_plaintext_siblings_dotenv_and_leaks() {
+    let repo_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+
+    let git_init = Command::new("git")
+        .arg("init")
+        .current_dir(repo_dir.path())
+        .output();
+    if !matches!(git_init, Ok(ref o) if o.status.success()) {
+        eprintln!("Skipping git staged test: git CLI unavailable");
+        return;
+    }
+
+    let bash_dir = repo_dir.path().join("bash");
+    fs::create_dir_all(&bash_dir).unwrap();
+    let key_file = key_dir.path().join("keys.txt");
+    create_test_age_key_and_encrypted_file(
+        &key_file,
+        &bash_dir.join(".tokens.age"),
+        b"export TOKEN=ok\n",
+    );
+    fs::write(bash_dir.join(".bashrc"), "export PATH=$HOME/bin:$PATH\n").unwrap();
+    fs::write(repo_dir.path().join(".env.example"), "API_KEY=\n").unwrap();
+
+    let git_add = |paths: &[&str]| {
+        let out = Command::new("git")
+            .arg("add")
+            .arg("-f")
+            .args(paths)
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git add failed: {:?}", out);
+    };
+    let git_reset = |paths: &[&str]| {
+        let out = Command::new("git")
+            .args(["rm", "--cached", "-f"])
+            .args(paths)
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git rm --cached failed: {:?}", out);
+    };
+
+    // 1. Clean staged set (regular dotfile, .env.example, encrypted .age) passes
+    git_add(&["bash/.bashrc", "bash/.tokens.age", ".env.example"]);
+    let clean = run_doctor_staged(repo_dir.path()).unwrap();
+    assert!(clean.healthy, "expected clean staged report: {:?}", clean);
+
+    // 2. Staging plaintext counterpart bash/.tokens is blocked
+    fs::write(bash_dir.join(".tokens"), "export SECRET=plain\n").unwrap();
+    git_add(&["bash/.tokens"]);
+    let sibling_report = run_doctor_staged(repo_dir.path()).unwrap();
+    assert!(!sibling_report.healthy);
+    assert!(sibling_report.checks.iter().any(|c| {
+        c.category == "secret_guard"
+            && c.severity == CheckSeverity::Error
+            && c.message.contains(".tokens")
+    }));
+    git_reset(&["bash/.tokens"]);
+    fs::remove_file(bash_dir.join(".tokens")).unwrap();
+
+    // 3. Staging .env and nested secrets.env is blocked
+    fs::write(repo_dir.path().join(".env"), "FOO=bar\n").unwrap();
+    fs::write(bash_dir.join("secrets.env"), "BAR=baz\n").unwrap();
+    git_add(&[".env", "bash/secrets.env"]);
+    let dotenv_report = run_doctor_staged(repo_dir.path()).unwrap();
+    assert!(!dotenv_report.healthy);
+    assert!(dotenv_report.errors >= 2, "report: {:?}", dotenv_report);
+    git_reset(&[".env", "bash/secrets.env"]);
+    fs::remove_file(repo_dir.path().join(".env")).unwrap();
+    fs::remove_file(bash_dir.join("secrets.env")).unwrap();
+
+    // 4. Staging an unencrypted credential leak is blocked
+    fs::write(
+        bash_dir.join(".bash_exports"),
+        "export GH_TOKEN=ghp_1234567890abcdefghijklmnop\n",
+    )
+    .unwrap();
+    git_add(&["bash/.bash_exports"]);
+    let leak_report = run_doctor_staged(repo_dir.path()).unwrap();
+    assert!(!leak_report.healthy);
+    assert!(leak_report.checks.iter().any(|c| {
+        c.category == "leak_scan"
+            && c.severity == CheckSeverity::Error
+            && c.message.contains("GitHub personal access token")
+    }));
+
+    // 5. CLI `enstow doctor --staged` exits non-zero on staged violation and 0 when clean
+    let bin = env!("CARGO_BIN_EXE_enstow");
+    if matches!(Command::new(bin).arg("--version").output(), Ok(o) if o.status.success()) {
+        let fail_out = Command::new(bin)
+            .current_dir(repo_dir.path())
+            .args(["doctor", "--staged"])
+            .output()
+            .unwrap();
+        assert!(!fail_out.status.success());
+
+        git_reset(&["bash/.bash_exports"]);
+        fs::remove_file(bash_dir.join(".bash_exports")).unwrap();
+
+        let ok_out = Command::new(bin)
+            .current_dir(repo_dir.path())
+            .args(["doctor", "--staged"])
+            .output()
+            .unwrap();
+        assert!(
+            ok_out.status.success(),
+            "expected clean doctor --staged to exit 0: {}",
+            String::from_utf8_lossy(&ok_out.stderr)
+        );
+    }
 }

@@ -16,12 +16,12 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `restow` | — | Clean stale symlinks/secrets and re-apply packages in one step | `enstow restow [PACKAGES...]` |
 | `unstow` | — | Remove symlinks and decrypted secret files managed by `enstow` | `enstow unstow [PACKAGES...] [--shred]` |
 | `scrub` | — | Securely shred and remove decrypted secrets and symlinks | `enstow scrub [PACKAGES...]` |
-| `status` | — | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--json]` |
+| `status` | — | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--check] [--json]` |
 | `diff` | — | Show unified diff between dotfiles and target destination | `enstow diff [--mask-secrets] [--json]` |
-| `doctor` | `lint` | Audit system health, secret hygiene, permissions, and symlinks | `enstow doctor [--json]` |
+| `doctor` | `lint` | Audit system health, secret hygiene, permissions, symlinks, and git staged files | `enstow doctor [--staged] [--json]` |
 | `encrypt` | — | Encrypt a secret dotfile into `.age` format | `enstow encrypt <file> [-r <key>]` |
 | `decrypt` | — | Decrypt an `age` or `sops` encrypted secret file to stdout or file | `enstow decrypt <file> [-o <out>]` |
-| `edit` | — | Interactively decrypt, edit in `$EDITOR`, and re-encrypt an `age` secret file | `enstow edit <file.age>` |
+| `edit` | — | Interactively decrypt, edit in `$EDITOR`, re-encrypt, and optionally `--apply` an `age` secret file | `enstow edit <file.age> [--apply]` |
 | `rekey` | — | Re-encrypt `.age` secrets across packages with updated recipients | `enstow rekey -r <key> [PACKAGES...]` |
 | `completions` | — | Output dynamic or static shell completion script (`bash`, `zsh`, `fish`, `powershell`, `elvish`) | `enstow completions zsh [--static]` |
 | `man` | — | Output UNIX roff man page | `enstow man > assets/enstow.1` |
@@ -135,6 +135,9 @@ enstow status zsh nvim
 
 # Machine-readable JSON output (can also be enabled via ENSTOW_JSON=1 or json = true in config)
 enstow status --json
+
+# Exit with code 1 if any dotfile or secret is not SYNCED (alias: --exit-code)
+enstow status --check
 ```
 
 States reported:
@@ -168,6 +171,9 @@ Audit repository and deployment health (also aliased as `enstow lint`):
 # Run full diagnostics
 enstow doctor
 
+# Inspect git staged files for plaintext secrets, .env files, and leaks (pre-commit hook)
+enstow doctor --staged
+
 # Machine-readable JSON diagnostics report
 enstow doctor --json
 ```
@@ -175,9 +181,10 @@ enstow doctor --json
 Checks performed by `enstow doctor`:
 
 - **Package Collisions:** Detects duplicate target paths claimed by multiple packages.
-- **Symlink Health:** Identifies broken, dangling, or misdirected managed symlinks.
+- **Symlink Health:** Identifies broken, dangling, stale, or legacy folded directory symlinks.
 - **Secret Permissions:** Verifies decrypted secret targets enforce `0600` (or configured) permissions on Unix.
 - **Decryption Prerequisites:** Checks availability of configured `age`/SSH identity keys and the `sops` binary when `.sops.*` files are present.
+- **Secret Guard:** Flags plaintext siblings sitting alongside `.age`/`.sops.*` files in the repository (even if `.enstowignore`d) and warns if plaintext counterparts are missing from `.gitignore`. With `--staged`, inspects `git diff --cached` for plaintext counterparts, `.env` files, and credential leaks.
 - **Secret Leak Scan:** Flags unencrypted sensitive files inside managed packages.
 
 ## :shield: Conflict Resolution & Backups

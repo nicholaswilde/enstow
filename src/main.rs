@@ -12,7 +12,9 @@ fn config_discovery_target(cli: &Cli) -> (Option<&Path>, bool) {
             let allow_local = args.repo.is_none() || src.is_some();
             (src, allow_local)
         }
-        Some(Commands::Add { source, .. }) | Some(Commands::Rekey { source, .. }) => {
+        Some(Commands::Add { source, .. })
+        | Some(Commands::Edit { source, .. })
+        | Some(Commands::Rekey { source, .. }) => {
             (source.as_deref().or(cli.common.source.as_deref()), true)
         }
         Some(Commands::Apply(a))
@@ -205,16 +207,23 @@ fn main() -> anyhow::Result<()> {
             )?;
             enstow::hook::run_post_unstow_hooks(&resolved)?;
         }
-        Some(Commands::Status { common, json }) => {
+        Some(Commands::Status {
+            common,
+            json,
+            check,
+        }) => {
             let resolved_common =
                 enstow::config::resolve_common_args(&common, config.as_ref())?.to_common_args();
             let json = enstow::config::resolve_json(json, config.as_ref());
             let actions = stow::plan_stow(&resolved_common)?;
             let statuses = stow::check_status(&actions, resolved_common.age_key_file.as_deref())?;
+            let all_synced = statuses
+                .iter()
+                .all(|item| item.status == stow::EntryStatus::Synced);
             if json {
                 println!("{}", serde_json::to_string_pretty(&statuses)?);
             } else {
-                for item in statuses {
+                for item in &statuses {
                     let status_str = match item.status {
                         stow::EntryStatus::Synced => "\x1b[32mSYNCED\x1b[0m    ",
                         stow::EntryStatus::Missing => "\x1b[33mMISSING\x1b[0m   ",
@@ -229,6 +238,9 @@ fn main() -> anyhow::Result<()> {
                         item.action.source().display()
                     );
                 }
+            }
+            if check && !all_synced {
+                std::process::exit(1);
             }
         }
         Some(Commands::Diff {
@@ -261,11 +273,19 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Doctor { common, json }) => {
+        Some(Commands::Doctor {
+            common,
+            json,
+            staged,
+        }) => {
             let resolved = enstow::config::resolve_common_args(&common, config.as_ref())?;
             let common_args = resolved.to_common_args();
             let json = enstow::config::resolve_json(json, config.as_ref());
-            let report = enstow::doctor::run_doctor(&common_args, Some(&resolved.permissions))?;
+            let report = if staged {
+                enstow::doctor::run_doctor_staged(common_args.source_path())?
+            } else {
+                enstow::doctor::run_doctor(&common_args, Some(&resolved.permissions))?
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -363,6 +383,9 @@ fn main() -> anyhow::Result<()> {
             recipient,
             age_key_file,
             editor,
+            apply,
+            source,
+            target,
         }) => {
             let resolved_recipients =
                 enstow::config::resolve_recipients(&recipient, config.as_ref());
@@ -370,16 +393,60 @@ fn main() -> anyhow::Result<()> {
                 enstow::config::resolve_age_key_file(age_key_file.as_deref(), config.as_ref());
             let resolved_editor =
                 enstow::config::resolve_editor(editor.as_deref(), config.as_ref());
-            let modified = enstow::crypto::edit_file_age(
+
+            // Validate target resolution before launching editor when --apply is set
+            let apply_context = if apply {
+                let resolved_source = enstow::config::resolve_source(
+                    source.as_deref().or(cli.common.source.as_deref()),
+                    config.as_ref(),
+                );
+                let resolved_target = enstow::config::resolve_target(
+                    target.as_deref().or(cli.common.target.as_deref()),
+                    config.as_ref(),
+                );
+                let resolved_packages =
+                    enstow::config::resolve_packages(&[], None, config.as_ref())?;
+                let resolved_permissions = enstow::config::resolve_permissions(config.as_ref())?;
+                let target_path = stow::resolve_secret_target(
+                    &file,
+                    &resolved_source,
+                    &resolved_target,
+                    &resolved_packages,
+                )?;
+                Some((resolved_target, target_path, resolved_permissions))
+            } else {
+                None
+            };
+
+            let updated_plaintext = enstow::crypto::edit_file_age_returning_plaintext(
                 &file,
                 &resolved_recipients,
                 resolved_key_file.as_deref(),
                 resolved_editor.as_deref(),
             )?;
-            if modified {
-                println!("Saved and re-encrypted {}", file.display());
-            } else {
-                println!("No changes made to {}", file.display());
+
+            match (updated_plaintext, apply_context) {
+                (Some(plaintext), Some((target_root, target_path, permissions))) => {
+                    let mode = stow::deploy_edited_secret(
+                        &file,
+                        &target_path,
+                        &target_root,
+                        &plaintext,
+                        Some(&permissions),
+                    )?;
+                    println!(
+                        "Saved, re-encrypted {}, and applied -> {} (mode {:04o})",
+                        file.display(),
+                        target_path.display(),
+                        mode
+                    );
+                }
+                (Some(_), None) => {
+                    println!("Saved and re-encrypted {}", file.display());
+                }
+                (None, _) => {
+                    println!("No changes made to {}", file.display());
+                }
             }
         }
         Some(Commands::Rekey {

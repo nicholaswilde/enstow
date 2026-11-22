@@ -65,6 +65,9 @@ Interactively decrypt, edit in `$ENSTOW_EDITOR` (or `$VISUAL` / `$EDITOR`), and 
 # Edit using default editor ($ENSTOW_EDITOR / $VISUAL / $EDITOR / system fallback)
 enstow edit secret.env.age
 
+# Edit and immediately re-deploy updated plaintext target (0600 or configured mode)
+enstow edit --apply bash/.tokens.age
+
 # Edit using explicit key file
 enstow edit secret.env.age --age-key-file ~/.config/sops/age/keys.txt
 
@@ -160,4 +163,14 @@ Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in
     enstow unstow --shred zsh secrets
     ```
 
-- **Continuous Verification:** Run [`enstow doctor`](./usage.md#system-diagnostics-enstow-doctor) to verify that all deployed secret files retain `0600` permissions and that no plaintext secrets have leaked into tracked packages.
+- **Continuous Verification:** Run [`enstow doctor`](./usage.md#system-diagnostics-enstow-doctor) to verify that all deployed secret files retain `0600` permissions, that no plaintext siblings sit alongside `.age`/`.sops.*` files in the repository, and that plaintext counterparts are covered by `.gitignore`.
+
+- **Git Pre-Commit Secret Guard (`doctor --staged`):** Install a zero-maintenance `.git/hooks/pre-commit` hook that blocks staged plaintext counterparts of encrypted files, unencrypted `.env` files, and credential patterns:
+
+    ```bash
+    cat << 'EOF' > .git/hooks/pre-commit
+    #!/usr/bin/env sh
+    exec enstow doctor --staged
+    EOF
+    chmod +x .git/hooks/pre-commit
+    ```

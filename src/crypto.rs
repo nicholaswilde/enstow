@@ -947,6 +947,20 @@ pub fn edit_file_age(
     age_key_file: Option<&Path>,
     editor_override: Option<&str>,
 ) -> Result<bool, EnstowError> {
+    Ok(
+        edit_file_age_returning_plaintext(file, recipients, age_key_file, editor_override)?
+            .is_some(),
+    )
+}
+
+/// Interactively edit an age-encrypted file and return `Some(new_plaintext)` if changes
+/// were saved and re-encrypted, or `None` if no changes were made.
+pub fn edit_file_age_returning_plaintext(
+    file: &Path,
+    recipients: &[String],
+    age_key_file: Option<&Path>,
+    editor_override: Option<&str>,
+) -> Result<Option<Vec<u8>>, EnstowError> {
     if !file.exists() {
         return Err(EnstowError::Io {
             path: file.to_path_buf(),
@@ -1080,7 +1094,7 @@ pub fn edit_file_age(
 
     if new_plaintext == plaintext {
         info!("No changes detected in secret file: {}", file.display());
-        return Ok(false);
+        return Ok(None);
     }
 
     let temp_out = file.with_extension("age.tmp");
@@ -1094,7 +1108,7 @@ pub fn edit_file_age(
     })?;
 
     info!("Successfully re-encrypted secret file: {}", file.display());
-    Ok(true)
+    Ok(Some(new_plaintext))
 }
 
 pub fn default_age_key_file() -> PathBuf {

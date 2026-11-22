@@ -32,7 +32,7 @@ fn test_cli_parsing_packages_in_subcommands() {
     // 3. status with packages and flag
     let cli = Cli::try_parse_from(["enstow", "status", "--json", "zsh", "tmux"]).unwrap();
     match cli.command {
-        Some(Commands::Status { common, json }) => {
+        Some(Commands::Status { common, json, .. }) => {
             assert!(json);
             assert_eq!(common.packages, vec!["zsh", "tmux"]);
         }

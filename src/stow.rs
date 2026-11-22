@@ -1567,6 +1567,77 @@ fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), Ensto
     Ok(())
 }
 
+/// Resolve the deployed target path for an encrypted source file inside `source_root`.
+pub fn resolve_secret_target(
+    file: &Path,
+    source_root: &Path,
+    target_root: &Path,
+    packages: &[String],
+) -> Result<PathBuf, EnstowError> {
+    let canon_file = normalize_path(&file.canonicalize().map_err(|e| EnstowError::Io {
+        path: file.to_path_buf(),
+        source: e,
+    })?);
+    let canon_source =
+        normalize_path(&source_root.canonicalize().map_err(|e| EnstowError::Io {
+            path: source_root.to_path_buf(),
+            source: e,
+        })?);
+    let plain_name = target_plaintext_name(&canon_file).ok_or_else(|| {
+        EnstowError::Config(format!(
+            "Could not determine target filename for '{}'",
+            file.display()
+        ))
+    })?;
+
+    let rel_path = if packages.is_empty() {
+        canon_file
+            .strip_prefix(&canon_source)
+            .ok()
+            .map(Path::to_path_buf)
+    } else {
+        packages.iter().find_map(|pkg| {
+            let pkg_root = canon_source.join(pkg);
+            let canon_pkg = normalize_path(&pkg_root.canonicalize().unwrap_or(pkg_root));
+            canon_file
+                .strip_prefix(&canon_pkg)
+                .ok()
+                .map(Path::to_path_buf)
+        })
+    };
+
+    let rel = rel_path.ok_or_else(|| {
+        EnstowError::Config(format!(
+            "Cannot resolve target path for '--apply': '{}' is not inside source directory '{}' (packages: {:?})",
+            file.display(),
+            source_root.display(),
+            packages
+        ))
+    })?;
+
+    Ok(target_root.join(rel.with_file_name(plain_name)))
+}
+
+/// Securely deploy updated plaintext for an edited secret to its resolved target path,
+/// unfolding legacy directory symlinks and enforcing configured permissions (default `0600`).
+pub fn deploy_edited_secret(
+    source: &Path,
+    target: &Path,
+    target_root: &Path,
+    plaintext: &[u8],
+    permissions: Option<&crate::config::PermissionsConfig>,
+) -> Result<u32, EnstowError> {
+    let mut dry_seen = std::collections::HashSet::new();
+    unfold_folded_ancestors(source, target, Some(target_root), false, &mut dry_seen)?;
+    ensure_target_not_inside_source(source, target, Some(target_root))?;
+
+    let mode = permissions
+        .map(|p| p.resolve_mode(target, Some(source), Some(target_root)))
+        .unwrap_or(0o600);
+    crate::crypto::write_secure_file_with_mode(target, plaintext, true, mode)?;
+    Ok(mode)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn add_file(
     file: &Path,

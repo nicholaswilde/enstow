@@ -2,7 +2,8 @@ use age::secrecy::ExposeSecret;
 use age::Recipient;
 use clap::Parser;
 use enstow::cli::{Cli, Commands};
-use enstow::crypto::edit_file_age;
+use enstow::crypto::{edit_file_age, edit_file_age_returning_plaintext};
+use enstow::stow::{deploy_edited_secret, resolve_secret_target};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -69,11 +70,17 @@ fn test_cli_parsing_edit() {
             recipient,
             age_key_file,
             editor,
+            apply,
+            source,
+            target,
         }) => {
             assert_eq!(file.to_str().unwrap(), "secret.env.age");
             assert!(recipient.is_empty());
             assert_eq!(age_key_file.unwrap().to_str().unwrap(), "/path/to/key.txt");
             assert_eq!(editor.unwrap(), "nano");
+            assert!(!apply);
+            assert!(source.is_none());
+            assert!(target.is_none());
         }
         _ => panic!("Expected Commands::Edit"),
     }
@@ -192,4 +199,214 @@ fn test_edit_file_age_env_editor_and_whitespace_args() {
     if let Some(v) = orig_editor {
         std::env::set_var("EDITOR", v);
     }
+}
+
+#[test]
+fn test_cli_parsing_edit_apply() {
+    let cli = Cli::try_parse_from([
+        "enstow",
+        "edit",
+        "bash/.tokens.age",
+        "--apply",
+        "-s",
+        "/repo",
+        "-t",
+        "/home/user",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Some(Commands::Edit {
+            file,
+            apply,
+            source,
+            target,
+            ..
+        }) => {
+            assert_eq!(file.to_str().unwrap(), "bash/.tokens.age");
+            assert!(apply);
+            assert_eq!(source.unwrap().to_str().unwrap(), "/repo");
+            assert_eq!(target.unwrap().to_str().unwrap(), "/home/user");
+        }
+        other => panic!("Expected Commands::Edit, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_resolve_secret_target_and_deploy_edited_secret() {
+    let workspace = tempdir().unwrap();
+    let repo = workspace.path().join("dotfiles");
+    let target = workspace.path().join("target");
+    let key_dir = workspace.path().join("keys");
+    let editor_dir = workspace.path().join("editors");
+    fs::create_dir_all(repo.join("bash")).unwrap();
+    fs::create_dir_all(repo.join("pvetui").join(".config").join("pvetui")).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(&key_dir).unwrap();
+    fs::create_dir_all(&editor_dir).unwrap();
+
+    let key_file = key_dir.join("keys.txt");
+    let tokens_age = repo.join("bash").join(".tokens.age");
+    setup_age_key_and_file(&key_file, &tokens_age, b"TOKEN=old\n");
+
+    let pvetui_age = repo
+        .join("pvetui")
+        .join(".config")
+        .join("pvetui")
+        .join("config.yml.age");
+    fs::write(&pvetui_age, b"dummy").unwrap();
+
+    // 1. Resolve packaged and nested paths
+    let resolved_tokens = resolve_secret_target(
+        &tokens_age,
+        &repo,
+        &target,
+        &["bash".to_string(), "pvetui".to_string()],
+    )
+    .unwrap();
+    assert_eq!(resolved_tokens, target.join(".tokens"));
+
+    let resolved_pvetui = resolve_secret_target(
+        &pvetui_age,
+        &repo,
+        &target,
+        &["bash".to_string(), "pvetui".to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        resolved_pvetui,
+        target.join(".config").join("pvetui").join("config.yml")
+    );
+
+    // 2. File outside source errors
+    let outside = workspace.path().join("outside.age");
+    fs::write(&outside, b"dummy").unwrap();
+    assert!(resolve_secret_target(&outside, &repo, &target, &["bash".to_string()]).is_err());
+
+    // 3. Edit and deploy updated plaintext with custom permissions
+    let editor_update = compile_mock_editor(&editor_dir, Some("TOKEN=new\n"), 0);
+    let updated = edit_file_age_returning_plaintext(
+        &tokens_age,
+        &[],
+        Some(&key_file),
+        Some(editor_update.to_str().unwrap()),
+    )
+    .unwrap()
+    .expect("expected modified plaintext");
+    assert_eq!(updated, b"TOKEN=new\n");
+
+    let mut perms = enstow::config::PermissionsConfig::new();
+    perms.add_rule(".tokens".into(), 0o600, None);
+    let mode = deploy_edited_secret(
+        &tokens_age,
+        &resolved_tokens,
+        &target,
+        &updated,
+        Some(&perms),
+    )
+    .unwrap();
+    assert_eq!(mode, 0o600);
+    assert_eq!(fs::read(&resolved_tokens).unwrap(), b"TOKEN=new\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&resolved_tokens).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // 4. Unchanged edit returns None
+    let editor_noop = compile_mock_editor(&editor_dir, None, 0);
+    let unchanged = edit_file_age_returning_plaintext(
+        &tokens_age,
+        &[],
+        Some(&key_file),
+        Some(editor_noop.to_str().unwrap()),
+    )
+    .unwrap();
+    assert!(unchanged.is_none());
+}
+
+#[test]
+fn test_cli_edit_apply_end_to_end() {
+    let bin = env!("CARGO_BIN_EXE_enstow");
+    match std::process::Command::new(bin).arg("--version").output() {
+        Ok(o) if o.status.success() => {}
+        _ => return,
+    }
+
+    let workspace = tempdir().unwrap();
+    let repo = workspace.path().join("dotfiles");
+    let target = workspace.path().join("target");
+    let key_dir = workspace.path().join("keys");
+    let editor_dir = workspace.path().join("editors");
+    fs::create_dir_all(repo.join("bash")).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(&key_dir).unwrap();
+    fs::create_dir_all(&editor_dir).unwrap();
+
+    let key_file = key_dir.join("keys.txt");
+    let tokens_age = repo.join("bash").join(".tokens.age");
+    setup_age_key_and_file(&key_file, &tokens_age, b"TOKEN=initial\n");
+    fs::write(
+        repo.join(".enstow.toml"),
+        "source = \".\"\npackages = [\"bash\"]\n",
+    )
+    .unwrap();
+
+    // Deploy initial secret
+    let deployed = target.join(".tokens");
+    fs::write(&deployed, b"TOKEN=initial\n").unwrap();
+
+    // 1. `enstow edit --apply` with modified content updates BOTH .age source and deployed target
+    let editor_update = compile_mock_editor(&editor_dir, Some("TOKEN=rotated\n"), 0);
+    let out = std::process::Command::new(bin)
+        .current_dir(&repo)
+        .env_remove("ENSTOW_CONFIG")
+        .args([
+            "edit",
+            "bash/.tokens.age",
+            "--apply",
+            "-t",
+            target.to_str().unwrap(),
+            "--age-key-file",
+            key_file.to_str().unwrap(),
+            "--editor",
+            editor_update.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "edit --apply failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        enstow::crypto::decrypt_age(&tokens_age, Some(&key_file)).unwrap(),
+        b"TOKEN=rotated\n"
+    );
+    assert_eq!(fs::read(&deployed).unwrap(), b"TOKEN=rotated\n");
+
+    // 2. `enstow edit --apply` with NO editor changes leaves deployed target untouched
+    fs::write(&deployed, b"TOKEN=untouched_marker\n").unwrap();
+    let editor_noop = compile_mock_editor(&editor_dir, None, 0);
+    let noop_out = std::process::Command::new(bin)
+        .current_dir(&repo)
+        .env_remove("ENSTOW_CONFIG")
+        .args([
+            "edit",
+            "bash/.tokens.age",
+            "--apply",
+            "-t",
+            target.to_str().unwrap(),
+            "--age-key-file",
+            key_file.to_str().unwrap(),
+            "--editor",
+            editor_noop.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(noop_out.status.success());
+    assert_eq!(fs::read(&deployed).unwrap(), b"TOKEN=untouched_marker\n");
 }
