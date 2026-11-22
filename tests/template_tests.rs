@@ -279,4 +279,34 @@ fn test_template_with_json_and_yaml_secret_stores() {
         fs::read_to_string(target_dir.path().join("app.conf")).unwrap(),
         "port=5432\ntls=true\nkey=yaml_secret_key\n"
     );
+
+    // Re-applying an already-synced rendered template without --force succeeds idempotently
+    execute_plan_with_backup_and_permissions(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        false,
+        None,
+        Some(target_dir.path()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    // Drifting the rendered target still triggers Collision without --force
+    fs::write(target_dir.path().join("app.conf"), "port=9999\n").unwrap();
+    let err = execute_plan_with_backup_and_permissions(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        false,
+        None,
+        Some(target_dir.path()),
+        None,
+        false,
+    )
+    .unwrap_err();
+    assert!(matches!(err, enstow::error::EnstowError::Collision { .. }));
 }

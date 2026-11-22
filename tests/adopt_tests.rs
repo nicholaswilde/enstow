@@ -224,3 +224,171 @@ fn test_adopt_end_to_end_cli() {
     );
     assert!(is_symlink_to(&target_file, &source_file));
 }
+
+#[test]
+fn test_adopt_encrypted_secret_honors_config_recipients_cli() {
+    use age::secrecy::ExposeSecret;
+
+    let bin = env!("CARGO_BIN_EXE_enstow");
+
+    match Command::new(bin).arg("--version").output() {
+        Ok(output) if output.status.success() => {}
+        _ => return,
+    }
+
+    let workspace = tempdir().unwrap();
+    let src_dir = workspace.path().join("dotfiles");
+    let tgt_dir = workspace.path().join("target");
+    let key_dir = workspace.path().join("keys");
+    fs::create_dir_all(src_dir.join("secrets")).unwrap();
+    fs::create_dir_all(&tgt_dir).unwrap();
+    fs::create_dir_all(&key_dir).unwrap();
+
+    let primary_key = age::x25519::Identity::generate();
+    let backup_key = age::x25519::Identity::generate();
+    let primary_pub = primary_key.to_public();
+    let backup_pub = backup_key.to_public();
+
+    let primary_key_file = key_dir.join("primary.txt");
+    let backup_key_file = key_dir.join("backup.txt");
+    fs::write(&primary_key_file, primary_key.to_string().expose_secret()).unwrap();
+    fs::write(&backup_key_file, backup_key.to_string().expose_secret()).unwrap();
+
+    let source_secret = src_dir.join("secrets").join("secret.env.age");
+    let recips: Vec<&dyn age::Recipient> = vec![&primary_pub, &backup_pub];
+    let encryptor = age::Encryptor::with_recipients(recips.into_iter()).unwrap();
+    let mut encrypted_buf = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut encrypted_buf).unwrap();
+    std::io::Write::write_all(&mut writer, b"TOKEN=initial\n").unwrap();
+    writer.finish().unwrap();
+    fs::write(&source_secret, encrypted_buf).unwrap();
+
+    fs::write(
+        src_dir.join(".enstow.toml"),
+        format!(
+            "source = \".\"\npackages = [\"secrets\"]\nrecipients = [\"{primary_pub}\", \"{backup_pub}\"]\n"
+        ),
+    )
+    .unwrap();
+
+    // Locally edited secret in target
+    let target_secret = tgt_dir.join("secret.env");
+    fs::write(&target_secret, "TOKEN=adopted_local\n").unwrap();
+
+    let out = Command::new(bin)
+        .current_dir(&src_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_RECIPIENTS")
+        .env_remove("SOPS_AGE_RECIPIENTS")
+        .args([
+            "apply",
+            "--adopt",
+            "--target",
+            tgt_dir.to_str().unwrap(),
+            "--age-key-file",
+            primary_key_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "apply --adopt failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Both configured recipients (primary AND backup) must be able to decrypt
+    assert_eq!(
+        enstow::crypto::decrypt_age(&source_secret, Some(&primary_key_file)).unwrap(),
+        b"TOKEN=adopted_local\n"
+    );
+    assert_eq!(
+        enstow::crypto::decrypt_age(&source_secret, Some(&backup_key_file)).unwrap(),
+        b"TOKEN=adopted_local\n"
+    );
+}
+
+#[test]
+fn test_adopt_encrypted_secret_honors_config_recipients_in_process() {
+    use age::secrecy::ExposeSecret;
+    use enstow::config::{resolve_common_args, ConfigFile};
+    use enstow::stow::execute_plan_interactive;
+
+    let workspace = tempdir().unwrap();
+    let src_dir = workspace.path().join("dotfiles");
+    let tgt_dir = workspace.path().join("target");
+    let key_dir = workspace.path().join("keys");
+    fs::create_dir_all(src_dir.join("secrets")).unwrap();
+    fs::create_dir_all(&tgt_dir).unwrap();
+    fs::create_dir_all(&key_dir).unwrap();
+
+    let primary_key = age::x25519::Identity::generate();
+    let backup_key = age::x25519::Identity::generate();
+    let primary_pub = primary_key.to_public();
+    let backup_pub = backup_key.to_public();
+
+    let primary_key_file = key_dir.join("primary.txt");
+    let backup_key_file = key_dir.join("backup.txt");
+    fs::write(&primary_key_file, primary_key.to_string().expose_secret()).unwrap();
+    fs::write(&backup_key_file, backup_key.to_string().expose_secret()).unwrap();
+
+    let source_secret = src_dir.join("secrets").join("secret.env.age");
+    let recips: Vec<&dyn age::Recipient> = vec![&primary_pub, &backup_pub];
+    let encryptor = age::Encryptor::with_recipients(recips.into_iter()).unwrap();
+    let mut encrypted_buf = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut encrypted_buf).unwrap();
+    std::io::Write::write_all(&mut writer, b"TOKEN=initial\n").unwrap();
+    writer.finish().unwrap();
+    fs::write(&source_secret, encrypted_buf).unwrap();
+
+    let cfg_path = src_dir.join(".enstow.toml");
+    fs::write(
+        &cfg_path,
+        format!(
+            "source = \".\"\npackages = [\"secrets\"]\nrecipients = [\"{primary_pub}\", \"{backup_pub}\"]\n"
+        ),
+    )
+    .unwrap();
+    let config = ConfigFile::load_from_path(&cfg_path).unwrap();
+
+    let target_secret = tgt_dir.join("secret.env");
+    fs::write(&target_secret, "TOKEN=adopted_in_process\n").unwrap();
+
+    let cli_args = CommonArgs {
+        target: Some(tgt_dir.clone()),
+        age_key_file: Some(primary_key_file.clone()),
+        adopt: true,
+        ..Default::default()
+    };
+    let resolved = resolve_common_args(&cli_args, Some(&config)).unwrap();
+    assert_eq!(
+        resolved.recipients,
+        vec![primary_pub.to_string(), backup_pub.to_string()]
+    );
+
+    let common = resolved.to_common_args();
+    let actions = plan_stow(&common).unwrap();
+    execute_plan_interactive(
+        &actions,
+        false,
+        common.age_key_file.as_deref(),
+        &resolved.recipients,
+        false,
+        false,
+        None,
+        Some(&tgt_dir),
+        Some(&resolved.permissions),
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        enstow::crypto::decrypt_age(&source_secret, Some(&primary_key_file)).unwrap(),
+        b"TOKEN=adopted_in_process\n"
+    );
+    assert_eq!(
+        enstow::crypto::decrypt_age(&source_secret, Some(&backup_key_file)).unwrap(),
+        b"TOKEN=adopted_in_process\n"
+    );
+}

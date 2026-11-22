@@ -4,7 +4,7 @@
 enstow [OPTIONS] [COMMAND]
 ```
 
-When executed without a subcommand (`enstow`), it runs the default `apply` command with common options.
+When executed without a subcommand (`enstow`), it runs the default `apply` command with common options. Repo-local `.enstow.{toml,yaml,yml,json}` (or `enstow.*`) files in `--source`, `ENSTOW_SOURCE`, or the current working directory are discovered automatically without passing `-C`.
 
 ## :keyboard: Command Reference
 

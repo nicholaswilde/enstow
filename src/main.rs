@@ -1,6 +1,32 @@
 use clap::{CommandFactory, Parser};
 use enstow::cli::{Cli, Commands};
 use enstow::stow;
+use std::path::Path;
+
+fn config_discovery_target(cli: &Cli) -> (Option<&Path>, bool) {
+    match &cli.command {
+        Some(Commands::Init(args)) => {
+            let src = args.source.as_deref().or(cli.common.source.as_deref());
+            // When cloning a remote repo without an explicit --source, skip CWD discovery
+            // so `init` clones to the default path and discovers that cloned repo's config.
+            let allow_local = args.repo.is_none() || src.is_some();
+            (src, allow_local)
+        }
+        Some(Commands::Add { source, .. }) | Some(Commands::Rekey { source, .. }) => {
+            (source.as_deref().or(cli.common.source.as_deref()), true)
+        }
+        Some(Commands::Apply(a))
+        | Some(Commands::Restow(a))
+        | Some(Commands::Unstow(a))
+        | Some(Commands::Scrub(a))
+        | Some(Commands::Status { common: a, .. })
+        | Some(Commands::Diff { common: a, .. })
+        | Some(Commands::Doctor { common: a, .. }) => {
+            (a.source.as_deref().or(cli.common.source.as_deref()), true)
+        }
+        _ => (cli.common.source.as_deref(), true),
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     clap_complete::CompleteEnv::with_factory(Cli::command)
@@ -8,7 +34,13 @@ fn main() -> anyhow::Result<()> {
         .complete();
 
     let cli = Cli::parse();
-    let config = enstow::config::load_config(cli.config.as_deref())?.map(|(_, cfg)| cfg);
+    let (config_source_dir, allow_local_config) = config_discovery_target(&cli);
+    let config = if allow_local_config {
+        enstow::config::load_config_for_source(cli.config.as_deref(), config_source_dir)?
+    } else {
+        enstow::config::load_global_config(cli.config.as_deref())?
+    }
+    .map(|(_, cfg)| cfg);
     let log_level = enstow::config::resolve_log_level(
         cli.log_level.as_deref(),
         cli.verbose,
@@ -104,6 +136,7 @@ fn main() -> anyhow::Result<()> {
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
+                &resolved.recipients,
                 common.force,
                 common.backup,
                 Some(&common.backup_dir_path()),
@@ -133,6 +166,7 @@ fn main() -> anyhow::Result<()> {
                 &apply_actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
+                &resolved.recipients,
                 common.force,
                 common.backup,
                 Some(&common.backup_dir_path()),
@@ -438,6 +472,7 @@ fn main() -> anyhow::Result<()> {
                 &actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
+                &resolved.recipients,
                 common.force,
                 common.backup,
                 Some(&common.backup_dir_path()),

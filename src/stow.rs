@@ -52,6 +52,14 @@ pub fn check_status(
     let mut statuses = Vec::new();
 
     for action in actions {
+        if find_folded_ancestor(action.source(), action.target(), None).is_some() {
+            statuses.push(FileActionStatus {
+                action: action.clone(),
+                status: EntryStatus::Conflict,
+            });
+            continue;
+        }
+
         let status = match action {
             FileAction::Symlink { source, target } => {
                 if is_symlink_to(target, source) {
@@ -554,6 +562,7 @@ pub fn execute_plan_with_backup_and_permissions(
         actions,
         dry_run,
         age_key_file,
+        &[],
         force,
         backup,
         backup_dir,
@@ -569,6 +578,7 @@ pub fn execute_plan_interactive(
     actions: &[FileAction],
     dry_run: bool,
     age_key_file: Option<&Path>,
+    recipients: &[String],
     force: bool,
     backup: bool,
     backup_dir: Option<&Path>,
@@ -586,6 +596,7 @@ pub fn execute_plan_interactive(
         actions,
         dry_run,
         age_key_file,
+        recipients,
         force,
         backup,
         backup_dir,
@@ -599,11 +610,43 @@ pub fn execute_plan_interactive(
     )
 }
 
+fn target_mode_matches(meta: &std::fs::Metadata, expected_mode: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        (meta.permissions().mode() & 0o7777) == (expected_mode & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (meta, expected_mode);
+        true
+    }
+}
+
+fn heal_target_mode(target: &Path, expected_mode: u32) -> Result<(), EnstowError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(target, std::fs::Permissions::from_mode(expected_mode)).map_err(
+            |e| EnstowError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            },
+        )?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (target, expected_mode);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
     actions: &[FileAction],
     dry_run: bool,
     age_key_file: Option<&Path>,
+    recipients: &[String],
     force: bool,
     backup: bool,
     backup_dir: Option<&Path>,
@@ -615,12 +658,32 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
     writer: &mut W,
     colorize: bool,
 ) -> Result<(), EnstowError> {
+    let mut unfolded_dry_run = std::collections::HashSet::new();
+
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
+                let had_folded = unfold_folded_ancestors(
+                    source,
+                    target,
+                    target_root,
+                    dry_run,
+                    &mut unfolded_dry_run,
+                )?;
+                if dry_run && had_folded {
+                    println!(
+                        "[dry-run] LINK  {} -> {}",
+                        target.display(),
+                        source.display()
+                    );
+                    continue;
+                }
+
                 if is_symlink_to(target, source) {
                     continue;
                 }
+
+                ensure_target_not_inside_source(source, target, target_root)?;
 
                 let mut file_force = force;
                 let mut file_adopt = adopt;
@@ -723,29 +786,57 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                 let mode = permissions
                     .map(|p| p.resolve_mode(target, Some(source), target_root))
                     .unwrap_or(0o600);
+                let had_folded = unfold_folded_ancestors(
+                    source,
+                    target,
+                    target_root,
+                    dry_run,
+                    &mut unfolded_dry_run,
+                )?;
+                if dry_run && had_folded {
+                    println!(
+                        "[dry-run] DECRYPT {} -> {} (mode {:04o})",
+                        source.display(),
+                        target.display(),
+                        mode
+                    );
+                    continue;
+                }
+
+                ensure_target_not_inside_source(source, target, target_root)?;
+
                 let mut file_force = force;
                 let mut file_adopt = adopt;
+                let mut predecrypted = None;
 
                 if let Ok(meta) = std::fs::symlink_metadata(target) {
-                    if !file_force && !backup && !file_adopt {
-                        if interactive {
-                            if !meta.file_type().is_symlink() && !meta.is_dir() {
-                                if let Some(secret_type) = detect_secret_type(source) {
-                                    if let (Ok(decrypted), Ok(existing)) = (
-                                        crate::crypto::decrypt_to_memory(
-                                            source,
-                                            secret_type,
-                                            age_key_file,
-                                        ),
-                                        std::fs::read(target),
-                                    ) {
-                                        if existing == decrypted {
-                                            continue;
+                    if !meta.file_type().is_symlink() && !meta.is_dir() {
+                        if let Some(secret_type) = detect_secret_type(source) {
+                            if let (Ok(decrypted), Ok(existing)) = (
+                                crate::crypto::decrypt_to_memory(source, secret_type, age_key_file),
+                                std::fs::read(target),
+                            ) {
+                                if existing == decrypted {
+                                    if !target_mode_matches(&meta, mode) {
+                                        if dry_run {
+                                            println!(
+                                                "[dry-run] CHMOD {} (mode {:04o})",
+                                                target.display(),
+                                                mode
+                                            );
+                                        } else {
+                                            heal_target_mode(target, mode)?;
                                         }
                                     }
+                                    continue;
                                 }
+                                predecrypted = Some(decrypted);
                             }
+                        }
+                    }
 
+                    if !file_force && !backup && !file_adopt {
+                        if interactive {
                             match prompt_conflict_resolution(
                                 action,
                                 age_key_file,
@@ -784,11 +875,12 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                             path: target.to_path_buf(),
                             source: e,
                         })?;
-                        let recipients = crate::crypto::resolve_age_recipients(&[], age_key_file)?;
+                        let resolved_recipients =
+                            crate::crypto::resolve_age_recipients(recipients, age_key_file)?;
                         crate::crypto::encrypt_bytes_age_with_recipients(
                             &plaintext,
                             source,
-                            &recipients,
+                            &resolved_recipients,
                         )?;
                         crate::crypto::write_secure_file_with_mode(target, &plaintext, true, mode)?;
                         continue;
@@ -834,11 +926,18 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                 }
 
                 info!("Decrypting {} -> {}", source.display(), target.display());
-                let secret_type = detect_secret_type(source).ok_or_else(|| {
-                    EnstowError::Config(format!("Unrecognized secret format: {}", source.display()))
-                })?;
-                let plaintext =
-                    crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?;
+                let plaintext = match predecrypted {
+                    Some(bytes) => bytes,
+                    None => {
+                        let secret_type = detect_secret_type(source).ok_or_else(|| {
+                            EnstowError::Config(format!(
+                                "Unrecognized secret format: {}",
+                                source.display()
+                            ))
+                        })?;
+                        crate::crypto::decrypt_to_memory(source, secret_type, age_key_file)?
+                    }
+                };
                 crate::crypto::write_secure_file_with_mode(target, &plaintext, file_force, mode)?;
             }
         }
@@ -944,15 +1043,15 @@ pub fn execute_unstow_plan_with_shred(
                         println!("[dry-run] UNLINK {}", target.display());
                     } else {
                         info!("Unlinking {}", target.display());
-                        std::fs::remove_file(target).map_err(|e| EnstowError::Io {
-                            path: target.to_path_buf(),
-                            source: e,
-                        })?;
+                        unlink_symlink(target)?;
                         clean_empty_parents(target, &target_canonical);
                     }
                 }
             }
-            FileAction::Decrypt { source: _, target } => {
+            FileAction::Decrypt { source, target } => {
+                if find_folded_ancestor(source, target, Some(target_root)).is_some() {
+                    continue;
+                }
                 if target.exists() || std::fs::symlink_metadata(target).is_ok() {
                     if dry_run {
                         if shred {
@@ -1118,12 +1217,176 @@ pub fn is_symlink_to(target: &Path, expected_source: &Path) -> bool {
     false
 }
 
+/// Inspect ancestor directories of `target` (between `target_root` and `target`, exclusive)
+/// and return the shallowest symlink pointing into `source`'s directory hierarchy
+/// (e.g. a legacy GNU Stow folded directory symlink).
+pub fn find_folded_ancestor(
+    source: &Path,
+    target: &Path,
+    target_root: Option<&Path>,
+) -> Option<(PathBuf, PathBuf)> {
+    let norm_source = normalize_path(
+        &source
+            .canonicalize()
+            .unwrap_or_else(|_| source.to_path_buf()),
+    );
+
+    let mut ancestors = Vec::new();
+    if let Some(root) = target_root {
+        let norm_root = normalize_path(root);
+        let canon_root = root.canonicalize().ok().map(|c| normalize_path(&c));
+        let mut cur = target.parent();
+        while let Some(dir) = cur {
+            let norm_dir = normalize_path(dir);
+            if dir == root || norm_dir == norm_root {
+                break;
+            }
+            if let Some(ref cr) = canon_root {
+                if dir.canonicalize().ok().map(|c| normalize_path(&c)).as_ref() == Some(cr) {
+                    break;
+                }
+            }
+            ancestors.push(dir.to_path_buf());
+            cur = dir.parent();
+        }
+    } else {
+        let mut cur = target.parent();
+        let mut src_cur = source.parent();
+        while let (Some(dir), Some(sdir)) = (cur, src_cur) {
+            if dir.file_name() != sdir.file_name() {
+                break;
+            }
+            ancestors.push(dir.to_path_buf());
+            cur = dir.parent();
+            src_cur = sdir.parent();
+        }
+    }
+
+    ancestors.reverse();
+    for anc in ancestors {
+        if let Ok(meta) = std::fs::symlink_metadata(&anc) {
+            if meta.file_type().is_symlink() {
+                if let Ok(dest) = std::fs::read_link(&anc) {
+                    let full_dest = if dest.is_relative() {
+                        match anc.parent() {
+                            Some(parent) => parent.join(&dest),
+                            None => dest,
+                        }
+                    } else {
+                        dest
+                    };
+                    let norm_dest = normalize_path(&full_dest.canonicalize().unwrap_or(full_dest));
+                    if norm_dest != norm_source && norm_source.starts_with(&norm_dest) {
+                        return Some((anc, norm_dest));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn unlink_symlink(path: &Path) -> Result<(), EnstowError> {
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(path).map_err(|e| EnstowError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })
+    }
+    #[cfg(windows)]
+    {
+        std::fs::remove_file(path)
+            .or_else(|_| std::fs::remove_dir(path))
+            .map_err(|e| EnstowError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })
+    }
+}
+
+fn unfold_folded_ancestors(
+    source: &Path,
+    target: &Path,
+    target_root: Option<&Path>,
+    dry_run: bool,
+    unfolded_dry_run: &mut std::collections::HashSet<PathBuf>,
+) -> Result<bool, EnstowError> {
+    let mut found_any = false;
+    while let Some((folded_dir, resolved_dest)) = find_folded_ancestor(source, target, target_root)
+    {
+        found_any = true;
+        if dry_run {
+            if unfolded_dry_run.insert(folded_dir.clone()) {
+                println!(
+                    "[dry-run] UNFOLD {} -> {}",
+                    folded_dir.display(),
+                    resolved_dest.display()
+                );
+            }
+            break;
+        }
+        info!(
+            "Unfolding legacy directory symlink {} -> {}",
+            folded_dir.display(),
+            resolved_dest.display()
+        );
+        unlink_symlink(&folded_dir)?;
+        std::fs::create_dir_all(&folded_dir).map_err(|e| EnstowError::Io {
+            path: folded_dir,
+            source: e,
+        })?;
+    }
+    Ok(found_any)
+}
+
+fn ensure_target_not_inside_source(
+    source: &Path,
+    target: &Path,
+    target_root: Option<&Path>,
+) -> Result<(), EnstowError> {
+    if let Some((folded, dest)) = find_folded_ancestor(source, target, target_root) {
+        return Err(EnstowError::Config(format!(
+            "Refusing to modify '{}' through folded directory symlink '{}' -> '{}'",
+            target.display(),
+            folded.display(),
+            dest.display()
+        )));
+    }
+    let Some(source_parent) = source.parent() else {
+        return Ok(());
+    };
+    let Some(target_parent) = target.parent() else {
+        return Ok(());
+    };
+    if let (Ok(sp), Ok(tp)) = (source_parent.canonicalize(), target_parent.canonicalize()) {
+        let norm_sp = normalize_path(&sp);
+        let norm_tp = normalize_path(&tp);
+        if norm_tp == norm_sp {
+            let same_file =
+                source.file_name().is_some() && source.file_name() == target.file_name();
+            let secret_in_source_dir = detect_secret_type(source).is_some();
+            if same_file || secret_in_source_dir {
+                return Err(EnstowError::Config(format!(
+                    "Refusing to modify '{}' because it resolves to source directory '{}'",
+                    target.display(),
+                    norm_sp.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn remove_target(target: &Path, meta: &std::fs::Metadata) -> Result<(), EnstowError> {
     if meta.file_type().is_dir() {
         std::fs::remove_dir_all(target).map_err(|e| EnstowError::Io {
             path: target.to_path_buf(),
             source: e,
         })
+    } else if meta.file_type().is_symlink() {
+        unlink_symlink(target)
     } else {
         std::fs::remove_file(target).map_err(|e| EnstowError::Io {
             path: target.to_path_buf(),
@@ -1266,6 +1529,8 @@ fn create_symlink(source: &Path, target: &Path, force: bool) -> Result<(), Ensto
         // Already links to the same source
         return Ok(());
     }
+
+    ensure_target_not_inside_source(source, target, None)?;
 
     if let Ok(meta) = std::fs::symlink_metadata(target) {
         if !force {

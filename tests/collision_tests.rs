@@ -791,3 +791,161 @@ fn test_normalize_path_components_and_relative_symlink() {
     .unwrap();
     assert!(backup_dir.join("link_rel").exists());
 }
+
+#[test]
+fn test_decrypt_idempotent_non_interactive_without_force() {
+    use age::secrecy::ExposeSecret;
+    use age::Recipient;
+    use std::io::Write;
+
+    let temp = tempdir().unwrap();
+    let source_dir = temp.path().join("source");
+    let target_dir = temp.path().join("target");
+    let backup_dir = temp.path().join("backup");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::create_dir_all(&target_dir).unwrap();
+
+    let key = age::x25519::Identity::generate();
+    let pubkey = key.to_public();
+    let key_file = temp.path().join("keys.txt");
+    fs::write(&key_file, key.to_string().expose_secret()).unwrap();
+
+    let plaintext = b"API_TOKEN=super-secret-value\n";
+    let encrypted_src = source_dir.join(".tokens.age");
+    let recipient: &dyn Recipient = &pubkey;
+    let encryptor = age::Encryptor::with_recipients(std::iter::once(recipient)).unwrap();
+    let mut encrypted_buf = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut encrypted_buf).unwrap();
+    writer.write_all(plaintext).unwrap();
+    writer.finish().unwrap();
+    fs::write(&encrypted_src, encrypted_buf).unwrap();
+
+    let target_file = target_dir.join(".tokens");
+    let actions = vec![FileAction::Decrypt {
+        source: encrypted_src.clone(),
+        target: target_file.clone(),
+    }];
+
+    // 1. Initial apply deploys secret
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        false,
+        Some(&backup_dir),
+        Some(&target_dir),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&target_file).unwrap(), plaintext);
+
+    // 2. Repeated apply without --force succeeds idempotently
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        false,
+        Some(&backup_dir),
+        Some(&target_dir),
+    )
+    .unwrap();
+
+    // 3. Dry-run without --force succeeds idempotently
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        true,
+        Some(&key_file),
+        false,
+        false,
+        Some(&backup_dir),
+        Some(&target_dir),
+    )
+    .unwrap();
+
+    // 4. Backup mode without --force skips already-synced secret without creating backup
+    enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        true,
+        Some(&backup_dir),
+        Some(&target_dir),
+    )
+    .unwrap();
+    assert!(!backup_dir.exists());
+
+    // 5. On Unix: loosened permissions with identical content are left untouched in dry-run
+    //    and healed to 0600 on real apply without --force
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&target_file, fs::Permissions::from_mode(0o644)).unwrap();
+
+        enstow::stow::execute_plan_with_backup(
+            &actions,
+            true,
+            Some(&key_file),
+            false,
+            false,
+            Some(&backup_dir),
+            Some(&target_dir),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&target_file).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        enstow::stow::execute_plan_with_backup(
+            &actions,
+            false,
+            Some(&key_file),
+            false,
+            false,
+            Some(&backup_dir),
+            Some(&target_dir),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&target_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // 6. Drifted target content still triggers Collision without --force
+    fs::write(&target_file, b"API_TOKEN=drifted-local-value\n").unwrap();
+    let err = enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        false,
+        Some(&backup_dir),
+        Some(&target_dir),
+    )
+    .unwrap_err();
+    assert!(matches!(err, EnstowError::Collision { .. }));
+
+    // 7. Symlink target pointing to identical plaintext still triggers Collision
+    let decoy = temp.path().join("decoy_tokens");
+    fs::write(&decoy, plaintext).unwrap();
+    fs::remove_file(&target_file).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&decoy, &target_file).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&decoy, &target_file).unwrap();
+
+    let err = enstow::stow::execute_plan_with_backup(
+        &actions,
+        false,
+        Some(&key_file),
+        false,
+        false,
+        Some(&backup_dir),
+        Some(&target_dir),
+    )
+    .unwrap_err();
+    assert!(matches!(err, EnstowError::Collision { .. }));
+}

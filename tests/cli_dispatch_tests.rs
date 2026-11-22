@@ -409,3 +409,132 @@ fn test_cli_parsing_passphrase_and_decrypt() {
         other => panic!("Expected Apply via sync alias, got {:?}", other),
     }
 }
+
+#[test]
+fn test_cli_repo_local_auto_discovery_and_cross_dir_config() {
+    let bin = env!("CARGO_BIN_EXE_enstow");
+
+    // Skip in cross-compiled environments that cannot run host binaries
+    match Command::new(bin).arg("--version").output() {
+        Ok(output) if output.status.success() => {}
+        _ => {
+            eprintln!("Skipping CLI repo-local config test: target binary cannot be executed");
+            return;
+        }
+    }
+
+    let workspace = tempdir().unwrap();
+    let repo = workspace.path().join("dotfiles");
+    let other_cwd = workspace.path().join("other");
+    let xdg_dir = workspace.path().join("xdg");
+    let tgt1 = workspace.path().join("tgt1");
+    let tgt2 = workspace.path().join("tgt2");
+    let tgt3 = workspace.path().join("tgt3");
+
+    fs::create_dir_all(repo.join("bash")).unwrap();
+    fs::create_dir_all(repo.join("extra")).unwrap();
+    fs::create_dir_all(&other_cwd).unwrap();
+    fs::create_dir_all(xdg_dir.join("enstow")).unwrap();
+    fs::create_dir_all(&tgt1).unwrap();
+    fs::create_dir_all(&tgt2).unwrap();
+    fs::create_dir_all(&tgt3).unwrap();
+
+    fs::write(repo.join("bash").join(".bashrc"), "export LOCAL=1\n").unwrap();
+    fs::write(repo.join("extra").join(".extrarc"), "export EXTRA=1\n").unwrap();
+    fs::write(
+        repo.join(".enstow.toml"),
+        "source = \".\"\npackages = [\"bash\"]\n",
+    )
+    .unwrap();
+    // Competing global config that selects `extra` instead of `bash`
+    fs::write(
+        xdg_dir.join("enstow").join("config.toml"),
+        "packages = [\"extra\"]\n",
+    )
+    .unwrap();
+
+    // 1. Inside repo dir with no -C or -s: auto-discovers .enstow.toml over global config
+    let output = Command::new(bin)
+        .current_dir(&repo)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_SOURCE")
+        .args(["apply", "-t", tgt1.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "apply in repo dir failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fs::symlink_metadata(tgt1.join(".bashrc")).is_ok());
+    assert!(fs::symlink_metadata(tgt1.join(".extrarc")).is_err());
+
+    // 2. Outside repo dir with -C <repo>/.enstow.toml and NO -s: resolves source="." relative to config
+    let output = Command::new(bin)
+        .current_dir(&other_cwd)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_SOURCE")
+        .args([
+            "-C",
+            repo.join(".enstow.toml").to_str().unwrap(),
+            "status",
+            "-t",
+            tgt1.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cross-dir status with -C failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("SYNCED"), "expected SYNCED in:\n{stdout}");
+    assert!(stdout.contains(".bashrc"), "expected .bashrc in:\n{stdout}");
+    assert!(
+        !stdout.contains(".extrarc"),
+        "unexpected .extrarc in:\n{stdout}"
+    );
+
+    // 3. Outside repo dir with top-level -s <repo> and NO -C: auto-discovers <repo>/.enstow.toml
+    let output = Command::new(bin)
+        .current_dir(&other_cwd)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_SOURCE")
+        .args(["-s", repo.to_str().unwrap(), "-t", tgt2.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "top-level -s apply failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fs::symlink_metadata(tgt2.join(".bashrc")).is_ok());
+    assert!(fs::symlink_metadata(tgt2.join(".extrarc")).is_err());
+
+    // 4. Outside repo dir with subcommand `apply -s <repo>` and NO -C: auto-discovers <repo>/.enstow.toml
+    let output = Command::new(bin)
+        .current_dir(&other_cwd)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_SOURCE")
+        .args([
+            "apply",
+            "-s",
+            repo.to_str().unwrap(),
+            "-t",
+            tgt3.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "subcommand apply -s failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fs::symlink_metadata(tgt3.join(".bashrc")).is_ok());
+    assert!(fs::symlink_metadata(tgt3.join(".extrarc")).is_err());
+}

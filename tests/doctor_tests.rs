@@ -443,3 +443,48 @@ fn test_doctor_all_leak_heuristics() {
     let report = run_doctor(&args, None).unwrap();
     assert_eq!(report.warnings, heuristics.len());
 }
+
+#[test]
+fn test_doctor_reports_legacy_folded_directory_symlink() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    let pkg_nvim = source_dir.path().join("nvim").join(".config").join("nvim");
+    fs::create_dir_all(&pkg_nvim).unwrap();
+    fs::write(pkg_nvim.join("init.lua"), "-- init\n").unwrap();
+
+    let target_config = target_dir.path().join(".config");
+    fs::create_dir_all(&target_config).unwrap();
+    let folded_nvim = target_config.join("nvim");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&pkg_nvim, &folded_nvim).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&pkg_nvim, &folded_nvim).unwrap();
+
+    let args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        packages: vec!["nvim".to_string()],
+        ..Default::default()
+    };
+
+    let report = run_doctor(&args, None).unwrap();
+    let folded_warnings: Vec<_> = report
+        .checks
+        .iter()
+        .filter(|c| {
+            c.category == "symlink_health"
+                && c.severity == CheckSeverity::Warning
+                && c.message.contains("folded directory symlink")
+        })
+        .collect();
+    assert_eq!(folded_warnings.len(), 1, "checks: {:?}", report.checks);
+
+    // Must not duplicate as generic stale symlink warning
+    let stale_warnings: Vec<_> = report
+        .checks
+        .iter()
+        .filter(|c| c.category == "symlink_health" && c.message.contains("Stale symlink"))
+        .collect();
+    assert!(stale_warnings.is_empty(), "checks: {:?}", report.checks);
+}

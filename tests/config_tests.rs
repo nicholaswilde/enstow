@@ -1,9 +1,10 @@
 use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
 use enstow::config::{
-    load_config, parse_bool_env, resolve_age_key_file, resolve_common_args, resolve_editor,
-    resolve_ignore_patterns, resolve_json, resolve_log_level, resolve_mask_secrets,
-    resolve_recipients, ConfigFile, ConfigFormat,
+    discover_local_config, load_config, load_config_for_source, parse_bool_env,
+    resolve_age_key_file, resolve_common_args, resolve_editor, resolve_ignore_patterns,
+    resolve_json, resolve_log_level, resolve_mask_secrets, resolve_recipients, resolve_source,
+    ConfigFile, ConfigFormat,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1089,5 +1090,152 @@ fn test_resolve_mask_secrets_precedence() {
     std::env::remove_var("ENSTOW_MASK_SECRETS");
     if let Some(v) = orig_env {
         std::env::set_var("ENSTOW_MASK_SECRETS", v);
+    }
+}
+
+#[test]
+fn test_repo_local_config_discovery_precedence() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let orig_xdg = std::env::var_os("XDG_CONFIG_HOME");
+    let orig_cfg = std::env::var_os("ENSTOW_CONFIG");
+    let orig_src = std::env::var_os("ENSTOW_SOURCE");
+
+    std::env::remove_var("ENSTOW_CONFIG");
+    std::env::remove_var("ENSTOW_SOURCE");
+
+    let temp = tempdir().unwrap();
+    let xdg_dir = temp.path().join("xdg");
+    let global_dir = xdg_dir.join("enstow");
+    fs::create_dir_all(&global_dir).unwrap();
+    let global_cfg = global_dir.join("config.toml");
+    fs::write(&global_cfg, "packages = [\"global_pkg\"]\n").unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+    let repo_dir = temp.path().join("repo");
+    fs::create_dir_all(&repo_dir).unwrap();
+
+    // 1. No repo-local config -> falls back to global config (ignores generic config.toml)
+    fs::write(repo_dir.join("config.toml"), "packages = [\"unrelated\"]\n").unwrap();
+    let (path, cfg) = load_config_for_source(None, Some(&repo_dir))
+        .unwrap()
+        .unwrap();
+    assert_eq!(path, global_cfg);
+    assert_eq!(cfg.packages, Some(vec!["global_pkg".to_string()]));
+
+    // 2. Repo-local .enstow.toml takes precedence over global config
+    let local_cfg = repo_dir.join(".enstow.toml");
+    fs::write(&local_cfg, "source = \".\"\npackages = [\"local_pkg\"]\n").unwrap();
+    let (path, cfg) = load_config_for_source(None, Some(&repo_dir))
+        .unwrap()
+        .unwrap();
+    assert_eq!(path, local_cfg);
+    assert_eq!(cfg.packages, Some(vec!["local_pkg".to_string()]));
+    assert_eq!(cfg.source, Some(repo_dir.clone()));
+
+    // 3. ENSTOW_SOURCE directs local discovery when CLI source_dir is None
+    std::env::set_var("ENSTOW_SOURCE", &repo_dir);
+    let (path, cfg) = load_config(None).unwrap().unwrap();
+    assert_eq!(path, local_cfg);
+    assert_eq!(cfg.packages, Some(vec!["local_pkg".to_string()]));
+    std::env::remove_var("ENSTOW_SOURCE");
+
+    // 4. ENSTOW_CONFIG overrides repo-local config
+    let env_cfg = temp.path().join("env.toml");
+    fs::write(&env_cfg, "packages = [\"env_pkg\"]\n").unwrap();
+    std::env::set_var("ENSTOW_CONFIG", &env_cfg);
+    let (path, cfg) = load_config_for_source(None, Some(&repo_dir))
+        .unwrap()
+        .unwrap();
+    assert_eq!(path, env_cfg);
+    assert_eq!(cfg.packages, Some(vec!["env_pkg".to_string()]));
+
+    // 5. Explicit -C overrides both ENSTOW_CONFIG and repo-local config
+    let cli_cfg = temp.path().join("cli.toml");
+    fs::write(&cli_cfg, "packages = [\"cli_pkg\"]\n").unwrap();
+    let (path, cfg) = load_config_for_source(Some(&cli_cfg), Some(&repo_dir))
+        .unwrap()
+        .unwrap();
+    assert_eq!(path, cli_cfg);
+    assert_eq!(cfg.packages, Some(vec!["cli_pkg".to_string()]));
+
+    // 6. Verify other repo-local formats (.enstow.yaml, .enstow.yml, .enstow.json, enstow.toml)
+    for (filename, content) in [
+        (".enstow.yaml", "packages:\n  - yaml_pkg\n"),
+        (".enstow.yml", "packages:\n  - yml_pkg\n"),
+        (".enstow.json", r#"{"packages": ["json_pkg"]}"#),
+        ("enstow.toml", "packages = [\"non_hidden_pkg\"]\n"),
+    ] {
+        let fmt_dir = tempdir().unwrap();
+        let file = fmt_dir.path().join(filename);
+        fs::write(&file, content).unwrap();
+        let (found, _) = discover_local_config(fmt_dir.path()).unwrap().unwrap();
+        assert_eq!(found, file);
+    }
+
+    // Restore env
+    std::env::remove_var("XDG_CONFIG_HOME");
+    std::env::remove_var("ENSTOW_CONFIG");
+    std::env::remove_var("ENSTOW_SOURCE");
+    if let Some(v) = orig_xdg {
+        std::env::set_var("XDG_CONFIG_HOME", v);
+    }
+    if let Some(v) = orig_cfg {
+        std::env::set_var("ENSTOW_CONFIG", v);
+    }
+    if let Some(v) = orig_src {
+        std::env::set_var("ENSTOW_SOURCE", v);
+    }
+}
+
+#[test]
+fn test_relative_source_resolved_against_config_parent() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let orig_src = std::env::var_os("ENSTOW_SOURCE");
+    std::env::remove_var("ENSTOW_SOURCE");
+
+    let temp = tempdir().unwrap();
+    let repo_dir = temp.path().join("dotfiles");
+    fs::create_dir_all(&repo_dir).unwrap();
+
+    // 1. source = "." resolves to config parent dir
+    let cfg_dot = repo_dir.join(".enstow.toml");
+    fs::write(&cfg_dot, "source = \".\"\n").unwrap();
+    let loaded_dot = ConfigFile::load_from_path(&cfg_dot).unwrap();
+    assert_eq!(loaded_dot.source, Some(repo_dir.clone()));
+    assert_eq!(resolve_source(None, Some(&loaded_dot)), repo_dir);
+
+    // 2. source = "./pkgs" and "pkgs" resolve to <parent>/pkgs
+    let cfg_sub = repo_dir.join("sub.toml");
+    fs::write(&cfg_sub, "source = \"./pkgs\"\n").unwrap();
+    let loaded_sub = ConfigFile::load_from_path(&cfg_sub).unwrap();
+    assert_eq!(loaded_sub.source, Some(repo_dir.join("pkgs")));
+
+    // 3. Tilde path is NOT joined against config parent
+    let cfg_tilde = repo_dir.join("tilde.toml");
+    fs::write(&cfg_tilde, "source = \"~/dotfiles\"\n").unwrap();
+    let loaded_tilde = ConfigFile::load_from_path(&cfg_tilde).unwrap();
+    assert_eq!(loaded_tilde.source, Some(PathBuf::from("~/dotfiles")));
+
+    // 4. Absolute path is preserved unchanged
+    let abs_path = temp.path().join("abs_dotfiles");
+    let cfg_abs = repo_dir.join("abs.toml");
+    let abs_toml = format!("source = {:?}\n", abs_path.to_string_lossy().as_ref());
+    fs::write(&cfg_abs, abs_toml).unwrap();
+    let loaded_abs = ConfigFile::load_from_path(&cfg_abs).unwrap();
+    assert_eq!(loaded_abs.source, Some(abs_path));
+
+    // 5. CLI --source and ENSTOW_SOURCE still override resolved config.source
+    let cli_override = temp.path().join("cli_src");
+    assert_eq!(
+        resolve_source(Some(&cli_override), Some(&loaded_dot)),
+        cli_override
+    );
+    let env_override = temp.path().join("env_src");
+    std::env::set_var("ENSTOW_SOURCE", &env_override);
+    assert_eq!(resolve_source(None, Some(&loaded_dot)), env_override);
+
+    std::env::remove_var("ENSTOW_SOURCE");
+    if let Some(v) = orig_src {
+        std::env::set_var("ENSTOW_SOURCE", v);
     }
 }

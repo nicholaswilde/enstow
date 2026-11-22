@@ -197,12 +197,36 @@ fn check_symlink_health(
         }
     }
 
-    // 2. Scan for stale symlinks belonging to managed dotfiles no longer active
+    // 2. Detect legacy GNU Stow folded directory symlinks pointing into source packages
+    for action in actions {
+        if let Some((folded_path, resolved_dest)) =
+            crate::stow::find_folded_ancestor(action.source(), action.target(), Some(&target_path))
+        {
+            let norm_folded = crate::stow::normalize_path(&folded_path);
+            if reported_paths.insert(norm_folded) {
+                reported_paths.insert(folded_path.clone());
+                checks.push(DoctorCheck {
+                    category: "symlink_health".into(),
+                    severity: CheckSeverity::Warning,
+                    message: format!(
+                        "Legacy folded directory symlink pointing into source repository: {} -> {} (run `enstow apply` or `enstow restow` to unfold)",
+                        folded_path.display(),
+                        resolved_dest.display()
+                    ),
+                    path: Some(folded_path),
+                });
+            }
+        }
+    }
+
+    // 3. Scan for stale symlinks belonging to managed dotfiles no longer active
     if let Ok(stale_actions) = plan_prune(args) {
         for stale in stale_actions {
             let target = stale.target().to_path_buf();
-            if !reported_paths.contains(&target) {
+            let norm_target = crate::stow::normalize_path(&target);
+            if !reported_paths.contains(&target) && !reported_paths.contains(&norm_target) {
                 reported_paths.insert(target.clone());
+                reported_paths.insert(norm_target);
                 checks.push(DoctorCheck {
                     category: "symlink_health".into(),
                     severity: CheckSeverity::Warning,

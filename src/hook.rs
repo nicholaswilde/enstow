@@ -411,6 +411,7 @@ mod tests {
             force: false,
             prune: false,
             age_key_file: None,
+            recipients: Vec::new(),
             profile: None,
             packages: vec!["dot_pkg".to_string()],
             ignore: Vec::new(),

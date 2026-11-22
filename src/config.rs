@@ -338,6 +338,9 @@ impl ConfigFile {
     }
 
     /// Load and parse a configuration file from a specified path.
+    ///
+    /// Relative `source` values (excluding `~`-prefixed paths) are resolved relative to the
+    /// configuration file's parent directory.
     pub fn load_from_path(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read configuration file '{}'", path.display()))?;
@@ -349,7 +352,11 @@ impl ConfigFile {
             )
         })?;
 
-        Self::parse(&content, format)
+        let mut cfg = Self::parse(&content, format)?;
+        if let Some(src) = cfg.source.as_deref() {
+            cfg.source = Some(resolve_relative_to_config(src, path));
+        }
+        Ok(cfg)
     }
 
     /// Discover and load the default configuration file if present at standard paths.
@@ -408,8 +415,50 @@ pub fn default_config_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Load configuration from explicit path, ENSTOW_CONFIG environment variable, or default paths.
-pub fn load_config(explicit_path: Option<&Path>) -> Result<Option<(PathBuf, ConfigFile)>> {
+const REPO_LOCAL_CONFIG_NAMES: &[&str] = &[
+    ".enstow.toml",
+    ".enstow.yaml",
+    ".enstow.yml",
+    ".enstow.json",
+    "enstow.toml",
+    "enstow.yaml",
+    "enstow.yml",
+    "enstow.json",
+];
+
+fn resolve_relative_to_config(path: &Path, config_path: &Path) -> PathBuf {
+    if path.as_os_str().is_empty() || path.is_absolute() || path.strip_prefix("~").is_ok() {
+        return path.to_path_buf();
+    }
+    let Some(parent) = config_path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return path.to_path_buf();
+    };
+    let mut joined = parent.to_path_buf();
+    for comp in path.components() {
+        if !matches!(comp, std::path::Component::CurDir) {
+            joined.push(comp.as_os_str());
+        }
+    }
+    joined
+}
+
+/// Discover a repo-local configuration file (`.enstow.*` or `enstow.*`) within `dir`.
+pub fn discover_local_config(dir: &Path) -> Result<Option<(PathBuf, ConfigFile)>> {
+    for name in REPO_LOCAL_CONFIG_NAMES {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Ok(Some((
+                candidate.clone(),
+                ConfigFile::load_from_path(&candidate)?,
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn load_explicit_or_env_config(
+    explicit_path: Option<&Path>,
+) -> Result<Option<(PathBuf, ConfigFile)>> {
     if let Some(path) = explicit_path {
         if path.is_file() {
             let cfg = ConfigFile::load_from_path(path)?;
@@ -444,7 +493,52 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Option<(PathBuf, Conf
         }
     }
 
+    Ok(None)
+}
+
+/// Load configuration from explicit path, ENSTOW_CONFIG, or global default paths (skipping local discovery).
+pub fn load_global_config(explicit_path: Option<&Path>) -> Result<Option<(PathBuf, ConfigFile)>> {
+    if let Some(found) = load_explicit_or_env_config(explicit_path)? {
+        return Ok(Some(found));
+    }
+
     ConfigFile::load_default()
+}
+
+/// Load configuration with precedence:
+/// explicit path (`-C`) > `ENSTOW_CONFIG` > repo-local config (in `source_dir`, `ENSTOW_SOURCE`, or CWD) > global default paths.
+pub fn load_config_for_source(
+    explicit_path: Option<&Path>,
+    source_dir: Option<&Path>,
+) -> Result<Option<(PathBuf, ConfigFile)>> {
+    if let Some(found) = load_explicit_or_env_config(explicit_path)? {
+        return Ok(Some(found));
+    }
+
+    let local_dir = source_dir
+        .map(expand_tilde)
+        .or_else(|| {
+            std::env::var("ENSTOW_SOURCE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| expand_tilde(Path::new(&s)))
+        })
+        .or_else(|| std::env::current_dir().ok());
+
+    if let Some(dir) = local_dir {
+        if dir.is_dir() {
+            if let Some(found) = discover_local_config(&dir)? {
+                return Ok(Some(found));
+            }
+        }
+    }
+
+    ConfigFile::load_default()
+}
+
+/// Load configuration from explicit path, ENSTOW_CONFIG, repo-local config, or default paths.
+pub fn load_config(explicit_path: Option<&Path>) -> Result<Option<(PathBuf, ConfigFile)>> {
+    load_config_for_source(explicit_path, None)
 }
 
 /// Compiled permission rules for setting target file modes.
@@ -546,6 +640,7 @@ pub struct ResolvedCommonArgs {
     pub force: bool,
     pub prune: bool,
     pub age_key_file: Option<PathBuf>,
+    pub recipients: Vec<String>,
     pub profile: Option<String>,
     pub packages: Vec<String>,
     pub ignore: Vec<String>,
@@ -777,15 +872,11 @@ pub fn resolve_init_source(cli_source: Option<&Path>, config: Option<&ConfigFile
 
 /// Discover a repository-embedded configuration file within `source_dir`.
 pub fn discover_repo_config(source_dir: &Path) -> Result<Option<(PathBuf, ConfigFile)>> {
+    if let Some(found) = discover_local_config(source_dir)? {
+        return Ok(Some(found));
+    }
+
     let candidates = [
-        source_dir.join("enstow.toml"),
-        source_dir.join("enstow.yaml"),
-        source_dir.join("enstow.yml"),
-        source_dir.join("enstow.json"),
-        source_dir.join(".enstow.toml"),
-        source_dir.join(".enstow.yaml"),
-        source_dir.join(".enstow.yml"),
-        source_dir.join(".enstow.json"),
         source_dir
             .join(".config")
             .join("enstow")
@@ -1173,6 +1264,9 @@ pub fn resolve_common_args(
         config.and_then(|c| c.interactive).unwrap_or_default()
     };
 
+    // 17. Recipients precedence: ENSTOW_RECIPIENTS > SOPS_AGE_RECIPIENTS > Config
+    let recipients = resolve_recipients(&[], config);
+
     Ok(ResolvedCommonArgs {
         source,
         target,
@@ -1180,6 +1274,7 @@ pub fn resolve_common_args(
         force,
         prune,
         age_key_file,
+        recipients,
         profile,
         packages,
         ignore,
@@ -1578,10 +1673,10 @@ mod tests {
         let cfg_path = dir.path().join("config.toml");
         fs::write(&cfg_path, "source = \"my_source\"\n").unwrap();
 
-        // Valid explicit load
+        // Valid explicit load (relative `source` resolves against config file's parent)
         let (p, loaded) = load_config(Some(&cfg_path)).unwrap().unwrap();
         assert_eq!(p, cfg_path);
-        assert_eq!(loaded.source, Some(PathBuf::from("my_source")));
+        assert_eq!(loaded.source, Some(dir.path().join("my_source")));
 
         // Missing file
         let missing = dir.path().join("missing.toml");

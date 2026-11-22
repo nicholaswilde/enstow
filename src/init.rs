@@ -384,6 +384,7 @@ pub fn run_init_with_io<R: BufRead, W: Write>(
         &actions,
         common.dry_run,
         common.age_key_file.as_deref(),
+        &resolved.recipients,
         common.force,
         common.backup,
         Some(&common.backup_dir_path()),
