@@ -7,7 +7,10 @@ use crate::cli::CommonArgs;
 use crate::config::PermissionsConfig;
 use crate::crypto::{self, SecretType};
 use crate::error::EnstowError;
-use crate::stow::{is_stale_scan_ignored_dir, normalize_path, plan_prune, plan_stow, FileAction};
+use crate::stow::{
+    is_stale_scan_ignored_dir, normalize_path, plan_prune_from_symlinks, plan_stow,
+    scan_target_symlinks, FileAction,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -294,47 +297,43 @@ fn check_symlink_health(
         .unwrap_or_else(|_| target_path.clone());
 
     let mut reported_paths = HashSet::new();
+    let scanned_symlinks = scan_target_symlinks(args, actions, &target_canonical);
 
-    // 1. Scan target directory for dangling symlinks
-    for entry in WalkDir::new(&target_canonical)
-        .max_depth(5)
-        .into_iter()
-        .filter_entry(|e| {
-            let name = e.file_name().to_str().unwrap_or_default();
-            if e.file_type().is_dir() {
-                !is_stale_scan_ignored_dir(name)
-            } else {
-                true
-            }
-        })
-    {
-        let Ok(entry) = entry else { continue };
-        if entry.path_is_symlink() {
-            let symlink_path = entry.path();
-            if let Ok(dest) = fs::read_link(symlink_path) {
-                let full_dest = if dest.is_relative() {
-                    match symlink_path.parent() {
-                        Some(parent) => parent.join(&dest),
-                        None => dest,
-                    }
-                } else {
-                    dest
-                };
-
-                // Check if destination exists
-                if !full_dest.exists() {
-                    reported_paths.insert(symlink_path.to_path_buf());
-                    checks.push(DoctorCheck {
-                        category: "symlink_health".into(),
-                        severity: CheckSeverity::Error,
-                        message: format!(
-                            "Dangling symlink pointing to nonexistent path: {} -> {}",
-                            symlink_path.display(),
-                            full_dest.display()
-                        ),
-                        path: Some(symlink_path.to_path_buf()),
-                    });
+    // 1. Scan managed target subtrees for dangling symlinks
+    for symlink_path in &scanned_symlinks {
+        if let Ok(dest) = fs::read_link(symlink_path) {
+            let full_dest = if dest.is_relative() {
+                match symlink_path.parent() {
+                    Some(parent) => parent.join(&dest),
+                    None => dest,
                 }
+            } else {
+                dest
+            };
+
+            // Check if destination exists
+            if !full_dest.exists() {
+                let norm_sp = normalize_path(symlink_path);
+                let norm_tc = normalize_path(&target_canonical);
+                let rebased = symlink_path
+                    .strip_prefix(&target_canonical)
+                    .or_else(|_| norm_sp.strip_prefix(&norm_tc))
+                    .map(|rel| target_path.join(rel))
+                    .unwrap_or_else(|_| symlink_path.clone());
+                reported_paths.insert(symlink_path.clone());
+                reported_paths.insert(norm_sp);
+                reported_paths.insert(rebased.clone());
+                reported_paths.insert(normalize_path(&rebased));
+                checks.push(DoctorCheck {
+                    category: "symlink_health".into(),
+                    severity: CheckSeverity::Error,
+                    message: format!(
+                        "Dangling symlink pointing to nonexistent path: {} -> {}",
+                        symlink_path.display(),
+                        full_dest.display()
+                    ),
+                    path: Some(symlink_path.clone()),
+                });
             }
         }
     }
@@ -344,7 +343,7 @@ fn check_symlink_health(
         if let Some((folded_path, resolved_dest)) =
             crate::stow::find_folded_ancestor(action.source(), action.target(), Some(&target_path))
         {
-            let norm_folded = crate::stow::normalize_path(&folded_path);
+            let norm_folded = normalize_path(&folded_path);
             if reported_paths.insert(norm_folded) {
                 reported_paths.insert(folded_path.clone());
                 checks.push(DoctorCheck {
@@ -362,10 +361,12 @@ fn check_symlink_health(
     }
 
     // 3. Scan for stale symlinks belonging to managed dotfiles no longer active
-    if let Ok(stale_actions) = plan_prune(args) {
+    if let Ok(stale_actions) =
+        plan_prune_from_symlinks(args, actions, &target_canonical, &scanned_symlinks)
+    {
         for stale in stale_actions {
             let target = stale.target().to_path_buf();
-            let norm_target = crate::stow::normalize_path(&target);
+            let norm_target = normalize_path(&target);
             if !reported_paths.contains(&target) && !reported_paths.contains(&norm_target) {
                 reported_paths.insert(target.clone());
                 reported_paths.insert(norm_target);

@@ -2,6 +2,7 @@ use crate::cli::CommonArgs;
 use crate::crypto::{detect_secret_type, target_plaintext_name};
 use crate::error::EnstowError;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::info;
 use walkdir::WalkDir;
@@ -282,137 +283,323 @@ pub fn find_age_secrets(
     Ok(age_files)
 }
 
-/// Plan removal of stale symlinks belonging to managed packages that are no longer active dotfiles.
-pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
-    let active_actions = plan_stow(args)?;
+const FALLBACK_STALE_SCAN_DEPTH: usize = 8;
+const STALE_SCAN_DEPTH_HEADROOM: usize = 4;
 
+fn resolve_pkg_roots(args: &CommonArgs) -> Result<(PathBuf, Vec<PathBuf>), EnstowError> {
     let source_path = args.source_path();
-    let target_path = args.target_path();
-    let source_root = source_path.canonicalize().map_err(|e| EnstowError::Io {
+    let source_root = normalize_path(&source_path.canonicalize().map_err(|e| EnstowError::Io {
         path: source_path.to_path_buf(),
         source: e,
-    })?;
+    })?);
 
     let pkg_roots = if args.packages.is_empty() {
         if args.ignore.iter().any(|p| p == "*") {
             Vec::new()
         } else {
-            vec![source_root]
+            vec![source_root.clone()]
         }
     } else {
         let mut roots = Vec::new();
         for pkg in &args.packages {
             let pkg_path = source_root.join(pkg);
-            let canonical = pkg_path.canonicalize().map_err(|e| EnstowError::Io {
-                path: pkg_path.clone(),
-                source: e,
-            })?;
+            let canonical =
+                normalize_path(&pkg_path.canonicalize().map_err(|e| EnstowError::Io {
+                    path: pkg_path.clone(),
+                    source: e,
+                })?);
             roots.push(canonical);
         }
         roots
     };
 
-    let target_canonical = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.clone());
+    Ok((source_root, pkg_roots))
+}
 
-    let mut stale_actions = Vec::new();
+/// Discover symlinks under `target_canonical` scoped to managed target subtrees with dynamic depth.
+/// Falls back to a bounded scan of `target_canonical` when no managed subtrees exist (e.g. empty or flat packages).
+pub(crate) fn scan_target_symlinks(
+    args: &CommonArgs,
+    active_actions: &[FileAction],
+    target_canonical: &Path,
+) -> Vec<PathBuf> {
+    if !target_canonical.is_dir() {
+        return Vec::new();
+    }
 
-    if target_canonical.is_dir() {
-        for entry in WalkDir::new(&target_canonical)
-            .max_depth(5)
+    let target_path = args.target_path();
+    let norm_target = normalize_path(&target_path);
+    let norm_target_canonical = normalize_path(target_canonical);
+
+    let mut managed_subtrees: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    let mut managed_ancestors: HashSet<PathBuf> = HashSet::new();
+
+    for action in active_actions {
+        let target = action.target();
+        let norm_t = normalize_path(target);
+        let rel = target
+            .strip_prefix(&target_path)
+            .map(Path::to_path_buf)
+            .or_else(|_| target.strip_prefix(target_canonical).map(Path::to_path_buf))
+            .or_else(|_| norm_t.strip_prefix(&norm_target).map(Path::to_path_buf))
+            .or_else(|_| {
+                norm_t
+                    .strip_prefix(&norm_target_canonical)
+                    .map(Path::to_path_buf)
+            });
+
+        let Ok(rel) = rel else {
+            continue;
+        };
+
+        let comps: Vec<std::ffi::OsString> = rel
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(os) => Some(os.to_os_string()),
+                _ => None,
+            })
+            .collect();
+
+        if comps.len() >= 2 {
+            let top_dir = target_canonical.join(&comps[0]);
+            let rel_depth = comps.len() - 1;
+            managed_subtrees
+                .entry(top_dir)
+                .and_modify(|d| *d = (*d).max(rel_depth))
+                .or_insert(rel_depth);
+
+            let mut cur = target_canonical.to_path_buf();
+            for comp in &comps[..comps.len() - 1] {
+                cur.push(comp);
+                managed_ancestors.insert(normalize_path(&cur));
+            }
+        }
+    }
+
+    // Include non-ignored top-level directories still present in package roots so packages
+    // whose files under a managed dir (e.g. `.gemini/`) were all deleted or ignored still get scanned.
+    if let Ok((source_root, pkg_roots)) = resolve_pkg_roots(args) {
+        for pkg_root in pkg_roots {
+            let gitignore = build_gitignore(&pkg_root, &source_root, &args.ignore);
+            let Ok(entries) = std::fs::read_dir(&pkg_root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(ft) = entry.file_type() else {
+                    continue;
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
+                if gitignore
+                    .matched_path_or_any_parents(entry.path(), true)
+                    .is_ignore()
+                {
+                    continue;
+                }
+                let top_dir = target_canonical.join(entry.file_name());
+                managed_subtrees.entry(top_dir.clone()).or_insert(0);
+                managed_ancestors.insert(normalize_path(&top_dir));
+            }
+        }
+    }
+
+    let mut symlinks = Vec::new();
+    let mut seen = HashSet::new();
+    let mut record = |path: &Path| {
+        if seen.insert(normalize_path(path)) {
+            symlinks.push(path.to_path_buf());
+        }
+    };
+
+    if managed_subtrees.is_empty() {
+        for entry in WalkDir::new(target_canonical)
+            .min_depth(1)
+            .max_depth(FALLBACK_STALE_SCAN_DEPTH)
             .into_iter()
             .filter_entry(|e| {
-                let name = e.file_name().to_str().unwrap_or_default();
-                if e.file_type().is_dir() {
-                    !is_stale_scan_ignored_dir(name)
-                } else {
-                    true
+                if e.depth() == 0 || !e.file_type().is_dir() {
+                    return true;
                 }
+                let name = e.file_name().to_str().unwrap_or_default();
+                !is_stale_scan_ignored_dir(name)
             })
         {
             let Ok(entry) = entry else {
                 continue;
             };
-
             if entry.path_is_symlink() {
-                let symlink_path = entry.path();
-                if let Ok(dest) = std::fs::read_link(symlink_path) {
-                    let full_dest = if dest.is_relative() {
-                        match symlink_path.parent() {
-                            Some(parent) => parent.join(&dest),
-                            None => dest,
+                record(entry.path());
+            }
+        }
+    } else {
+        // 1. Scan direct children of target root so deleted top-level targets (depth 1) are caught.
+        for entry in WalkDir::new(target_canonical)
+            .min_depth(1)
+            .max_depth(1)
+            .into_iter()
+        {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if entry.path_is_symlink() {
+                record(entry.path());
+            }
+        }
+
+        // 2. Scan each managed target subtree with dynamic depth derived from active targets.
+        for (subtree, max_rel_depth) in managed_subtrees {
+            // Never follow top-level symlinks (e.g. legacy folded directory symlinks into source).
+            let is_real_dir = std::fs::symlink_metadata(&subtree)
+                .map(|m| m.file_type().is_dir())
+                .unwrap_or(false);
+            if !is_real_dir {
+                continue;
+            }
+
+            let subtree_max_depth = max_rel_depth
+                .saturating_add(STALE_SCAN_DEPTH_HEADROOM)
+                .max(FALLBACK_STALE_SCAN_DEPTH);
+
+            for entry in WalkDir::new(&subtree)
+                .min_depth(1)
+                .max_depth(subtree_max_depth)
+                .into_iter()
+                .filter_entry(|e| {
+                    if e.depth() == 0 || !e.file_type().is_dir() {
+                        return true;
+                    }
+                    if managed_ancestors.contains(&normalize_path(e.path())) {
+                        return true;
+                    }
+                    let name = e.file_name().to_str().unwrap_or_default();
+                    !is_stale_scan_ignored_dir(name)
+                })
+            {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if entry.path_is_symlink() {
+                    record(entry.path());
+                }
+            }
+        }
+    }
+
+    symlinks
+}
+
+/// Plan removal of stale symlinks belonging to managed packages from pre-scanned candidate symlinks.
+pub(crate) fn plan_prune_from_symlinks(
+    args: &CommonArgs,
+    active_actions: &[FileAction],
+    target_canonical: &Path,
+    symlinks: &[PathBuf],
+) -> Result<Vec<FileAction>, EnstowError> {
+    let (_source_root, pkg_roots) = resolve_pkg_roots(args)?;
+    if pkg_roots.is_empty() || !target_canonical.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let target_path = args.target_path();
+    let mut stale_actions = Vec::new();
+
+    for symlink_path in symlinks {
+        if let Ok(dest) = std::fs::read_link(symlink_path) {
+            let full_dest = if dest.is_relative() {
+                match symlink_path.parent() {
+                    Some(parent) => parent.join(&dest),
+                    None => dest,
+                }
+            } else {
+                dest
+            };
+
+            let norm_dest = normalize_path(&full_dest);
+            let canon_dest = full_dest.canonicalize().ok().or_else(|| {
+                // For dangling symlinks where target was removed, resolve nearest existing ancestor
+                let mut ancestor = full_dest.parent();
+                let mut rel_components = Vec::new();
+                if let Some(name) = full_dest.file_name() {
+                    rel_components.push(name);
+                }
+                while let Some(dir) = ancestor {
+                    if let Ok(canon) = dir.canonicalize() {
+                        let mut res = canon;
+                        for comp in rel_components.into_iter().rev() {
+                            res.push(comp);
                         }
-                    } else {
-                        dest
+                        return Some(res);
+                    }
+                    if let Some(name) = dir.file_name() {
+                        rel_components.push(name);
+                    }
+                    ancestor = dir.parent();
+                }
+                None
+            });
+            let norm_canon_dest = canon_dest.as_ref().map(|c| normalize_path(c));
+
+            let belongs_to_pkg = pkg_roots.iter().any(|pkg_root| {
+                let norm_pkg = normalize_path(pkg_root);
+                norm_dest.starts_with(&norm_pkg)
+                    || norm_canon_dest
+                        .as_ref()
+                        .map(|c| c.starts_with(&norm_pkg))
+                        .unwrap_or(false)
+            });
+
+            if belongs_to_pkg {
+                let already_active = active_actions.iter().any(|a| {
+                    let t = a.target();
+                    t == symlink_path
+                        || normalize_path(t) == normalize_path(symlink_path)
+                        || t.canonicalize().ok().map(|c| normalize_path(&c))
+                            == symlink_path.canonicalize().ok().map(|c| normalize_path(&c))
+                });
+
+                if !already_active {
+                    let norm_sp = normalize_path(symlink_path);
+                    let norm_tc = normalize_path(target_canonical);
+                    let relative_target = symlink_path
+                        .strip_prefix(target_canonical)
+                        .or_else(|_| norm_sp.strip_prefix(&norm_tc));
+                    let target = match relative_target {
+                        Ok(rel) => target_path.join(rel),
+                        Err(_) => symlink_path.to_path_buf(),
                     };
 
-                    let norm_dest = normalize_path(&full_dest);
-                    let canon_dest = full_dest.canonicalize().ok().or_else(|| {
-                        // For dangling symlinks where target was removed, resolve nearest existing ancestor
-                        let mut ancestor = full_dest.parent();
-                        let mut rel_components = Vec::new();
-                        if let Some(name) = full_dest.file_name() {
-                            rel_components.push(name);
-                        }
-                        while let Some(dir) = ancestor {
-                            if let Ok(canon) = dir.canonicalize() {
-                                let mut res = canon;
-                                for comp in rel_components.into_iter().rev() {
-                                    res.push(comp);
-                                }
-                                return Some(res);
-                            }
-                            if let Some(name) = dir.file_name() {
-                                rel_components.push(name);
-                            }
-                            ancestor = dir.parent();
-                        }
-                        None
+                    stale_actions.push(FileAction::Symlink {
+                        source: full_dest,
+                        target,
                     });
-                    let norm_canon_dest = canon_dest.as_ref().map(|c| normalize_path(c));
-
-                    let belongs_to_pkg = pkg_roots.iter().any(|pkg_root| {
-                        let norm_pkg = normalize_path(pkg_root);
-                        norm_dest.starts_with(&norm_pkg)
-                            || norm_canon_dest
-                                .as_ref()
-                                .map(|c| c.starts_with(&norm_pkg))
-                                .unwrap_or(false)
-                    });
-
-                    if belongs_to_pkg {
-                        let already_active = active_actions.iter().any(|a| {
-                            let t = a.target();
-                            t == symlink_path
-                                || normalize_path(t) == normalize_path(symlink_path)
-                                || t.canonicalize().ok().map(|c| normalize_path(&c))
-                                    == symlink_path.canonicalize().ok().map(|c| normalize_path(&c))
-                        });
-
-                        if !already_active {
-                            let norm_sp = normalize_path(symlink_path);
-                            let norm_tc = normalize_path(&target_canonical);
-                            let relative_target = symlink_path
-                                .strip_prefix(&target_canonical)
-                                .or_else(|_| norm_sp.strip_prefix(&norm_tc));
-                            let target = match relative_target {
-                                Ok(rel) => target_path.join(rel),
-                                Err(_) => symlink_path.to_path_buf(),
-                            };
-
-                            stale_actions.push(FileAction::Symlink {
-                                source: full_dest,
-                                target,
-                            });
-                        }
-                    }
                 }
             }
         }
     }
 
     Ok(stale_actions)
+}
+
+/// Plan removal of stale symlinks belonging to managed packages that are no longer active dotfiles.
+pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
+    let active_actions = plan_stow(args)?;
+    let (_source_root, pkg_roots) = resolve_pkg_roots(args)?;
+    if pkg_roots.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let target_path = args.target_path();
+    let target_canonical = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.clone());
+
+    if !target_canonical.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let symlinks = scan_target_symlinks(args, &active_actions, &target_canonical);
+    plan_prune_from_symlinks(args, &active_actions, &target_canonical, &symlinks)
 }
 
 pub(crate) fn is_stale_scan_ignored_dir(name: &str) -> bool {
@@ -1982,6 +2169,88 @@ mod tests {
         assert!(is_stale_scan_ignored_dir("node_modules"));
         assert!(!is_stale_scan_ignored_dir(".config"));
         assert!(!is_stale_scan_ignored_dir("dotfiles"));
+    }
+
+    #[test]
+    fn test_scan_target_symlinks_dynamic_depth_beyond_fallback_and_scoping() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+
+        // Active file at depth 10 under target (.config/l1/l2/l3/l4/l5/l6/l7/l8/active.txt)
+        let active_parent = source_dir
+            .path()
+            .join(".config")
+            .join("l1")
+            .join("l2")
+            .join("l3")
+            .join("l4")
+            .join("l5")
+            .join("l6")
+            .join("l7")
+            .join("l8");
+        let stale_parent = active_parent.join("l9");
+        std::fs::create_dir_all(&stale_parent).unwrap();
+
+        let active_src = active_parent.join("active.txt");
+        let stale_src = stale_parent.join("stale.txt"); // depth 11 under target
+        std::fs::write(&active_src, "active\n").unwrap();
+        std::fs::write(&stale_src, "stale\n").unwrap();
+
+        let args = CommonArgs {
+            source: Some(source_dir.path().to_path_buf()),
+            target: Some(target_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let initial_plan = plan_stow(&args).unwrap();
+        execute_plan(&initial_plan, false, None, false).unwrap();
+
+        // Remove depth-11 file so it becomes stale while depth-10 active file remains
+        std::fs::remove_file(&stale_src).unwrap();
+        std::fs::remove_dir(&stale_parent).unwrap();
+
+        // Unmanaged top-level directory containing a symlink must not be descended into
+        let unmanaged_dir = target_dir.path().join("Documents").join("nested");
+        std::fs::create_dir_all(&unmanaged_dir).unwrap();
+        let unmanaged_link = unmanaged_dir.join("unrelated_link");
+        let unmanaged_target = source_dir.path().join("unrelated_target");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&unmanaged_target, &unmanaged_link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&unmanaged_target, &unmanaged_link).unwrap();
+
+        let active_actions = plan_stow(&args).unwrap();
+        let target_canonical = target_dir.path().canonicalize().unwrap();
+        let scanned = scan_target_symlinks(&args, &active_actions, &target_canonical);
+        let norm_scanned: Vec<PathBuf> = scanned.iter().map(|p| normalize_path(p)).collect();
+
+        let expected_stale = target_canonical
+            .join(".config")
+            .join("l1")
+            .join("l2")
+            .join("l3")
+            .join("l4")
+            .join("l5")
+            .join("l6")
+            .join("l7")
+            .join("l8")
+            .join("l9")
+            .join("stale.txt");
+        let canonical_unmanaged = target_canonical
+            .join("Documents")
+            .join("nested")
+            .join("unrelated_link");
+
+        assert!(
+            norm_scanned.contains(&normalize_path(&expected_stale)),
+            "Expected depth-11 stale symlink to be discovered via dynamic depth, got: {:?}",
+            norm_scanned
+        );
+        assert!(
+            !norm_scanned.contains(&normalize_path(&canonical_unmanaged)),
+            "Expected unmanaged top-level dir not to be walked, got: {:?}",
+            norm_scanned
+        );
     }
 
     #[test]

@@ -725,3 +725,167 @@ fn test_doctor_staged_blocks_plaintext_siblings_dotenv_and_leaks() {
         );
     }
 }
+
+#[test]
+fn test_doctor_symlink_health_detects_depth_6_dangling_and_stale_symlinks() {
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+
+    // Depth-6 layout under managed `.gemini` subtree
+    let skill_dir = source_dir
+        .path()
+        .join(".gemini")
+        .join("config")
+        .join("skills")
+        .join("demo-skill");
+    let scripts_dir = skill_dir.join("scripts");
+    let agents_dir = skill_dir.join("agents");
+    fs::create_dir_all(&scripts_dir).unwrap();
+    fs::create_dir_all(&agents_dir).unwrap();
+
+    let kept_skill = skill_dir.join("SKILL.md"); // depth 5
+    let broken_src = scripts_dir.join("broken.sh"); // depth 6 (will be deleted -> dangling)
+    let ignored_src = agents_dir.join("openai.yaml"); // depth 6 (will be ignored -> stale)
+
+    fs::write(&kept_skill, "# demo\n").unwrap();
+    fs::write(&broken_src, "#!/bin/sh\n").unwrap();
+    fs::write(&ignored_src, "name: demo\n").unwrap();
+
+    let initial_args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        ..Default::default()
+    };
+
+    let plan = enstow::stow::plan_stow(&initial_args).unwrap();
+    enstow::stow::execute_plan(&plan, false, None, false).unwrap();
+
+    // Delete depth-6 script so its symlink becomes dangling
+    fs::remove_file(&broken_src).unwrap();
+
+    // Create a dangling symlink inside an ignored dir (node_modules) inside managed subtree
+    let ignored_nm_dir = target_dir
+        .path()
+        .join(".gemini")
+        .join("config")
+        .join("skills")
+        .join("demo-skill")
+        .join("node_modules");
+    fs::create_dir_all(&ignored_nm_dir).unwrap();
+    let ignored_nm_dangling = ignored_nm_dir.join("broken_in_nm");
+    let missing_nm_target = source_dir.path().join("missing_nm_target");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&missing_nm_target, &ignored_nm_dangling).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&missing_nm_target, &ignored_nm_dangling).unwrap();
+
+    // Create an unrelated dangling symlink outside managed target subtrees
+    let unrelated_dir = target_dir.path().join("unrelated").join("nested");
+    fs::create_dir_all(&unrelated_dir).unwrap();
+    let unrelated_dangling = unrelated_dir.join("broken_unrelated");
+    let missing_unrelated = target_dir.path().join("nonexistent_unrelated");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&missing_unrelated, &unrelated_dangling).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&missing_unrelated, &unrelated_dangling).unwrap();
+
+    // Run doctor with `openai.yaml` ignored (making its target symlink stale, not dangling)
+    let doctor_args = CommonArgs {
+        source: Some(source_dir.path().to_path_buf()),
+        target: Some(target_dir.path().to_path_buf()),
+        ignore: vec!["openai.yaml".to_string()],
+        ..Default::default()
+    };
+
+    let report = run_doctor(&doctor_args, None).unwrap();
+    assert!(!report.healthy);
+
+    let canon_target = fs::canonicalize(target_dir.path()).unwrap();
+    let target_broken = canon_target
+        .join(".gemini")
+        .join("config")
+        .join("skills")
+        .join("demo-skill")
+        .join("scripts")
+        .join("broken.sh");
+    let target_stale = target_dir
+        .path()
+        .join(".gemini")
+        .join("config")
+        .join("skills")
+        .join("demo-skill")
+        .join("agents")
+        .join("openai.yaml");
+    let target_stale_canon = canon_target
+        .join(".gemini")
+        .join("config")
+        .join("skills")
+        .join("demo-skill")
+        .join("agents")
+        .join("openai.yaml");
+    let ignored_nm_dangling_canon = canon_target
+        .join(".gemini")
+        .join("config")
+        .join("skills")
+        .join("demo-skill")
+        .join("node_modules")
+        .join("broken_in_nm");
+    let unrelated_dangling_canon = canon_target
+        .join("unrelated")
+        .join("nested")
+        .join("broken_unrelated");
+
+    assert!(
+        report.checks.iter().any(|c| {
+            c.category == "symlink_health"
+                && c.severity == CheckSeverity::Error
+                && c.message.contains("Dangling symlink")
+                && c.path
+                    .as_deref()
+                    .map(|p| {
+                        enstow::stow::normalize_path(p)
+                            == enstow::stow::normalize_path(&target_broken)
+                    })
+                    .unwrap_or(false)
+        }),
+        "Expected depth-6 dangling symlink error for {}, checks: {:?}",
+        target_broken.display(),
+        report.checks
+    );
+
+    assert!(
+        report.checks.iter().any(|c| {
+            c.category == "symlink_health"
+                && c.severity == CheckSeverity::Warning
+                && c.message.contains("Stale symlink")
+                && c.path
+                    .as_deref()
+                    .map(|p| {
+                        let norm = enstow::stow::normalize_path(p);
+                        norm == enstow::stow::normalize_path(&target_stale)
+                            || norm == enstow::stow::normalize_path(&target_stale_canon)
+                    })
+                    .unwrap_or(false)
+        }),
+        "Expected depth-6 stale symlink warning for {}, checks: {:?}",
+        target_stale.display(),
+        report.checks
+    );
+
+    assert!(
+        !report.checks.iter().any(|c| {
+            c.path
+                .as_deref()
+                .map(|p| {
+                    let norm = enstow::stow::normalize_path(p);
+                    norm == enstow::stow::normalize_path(&ignored_nm_dangling)
+                        || norm == enstow::stow::normalize_path(&ignored_nm_dangling_canon)
+                        || norm == enstow::stow::normalize_path(&unrelated_dangling)
+                        || norm == enstow::stow::normalize_path(&unrelated_dangling_canon)
+                })
+                .unwrap_or(false)
+        }),
+        "Ignored or unrelated dangling symlinks should not be reported, checks: {:?}",
+        report.checks
+    );
+}

@@ -30,6 +30,40 @@ fn config_discovery_target(cli: &Cli) -> (Option<&Path>, bool) {
     }
 }
 
+fn run_apply(
+    args: &enstow::cli::CommonArgs,
+    config: Option<&enstow::config::ConfigFile>,
+) -> anyhow::Result<()> {
+    let resolved = enstow::config::resolve_common_args(args, config)?;
+    let common = resolved.to_common_args();
+    if common.prune {
+        let stale_actions = stow::plan_prune(&common)?;
+        stow::execute_unstow_plan_with_shred(
+            &stale_actions,
+            &common.target_path(),
+            common.dry_run,
+            common.shred,
+        )?;
+    }
+    let actions = stow::plan_stow(&common)?;
+    enstow::hook::run_pre_apply_hooks(&resolved)?;
+    stow::execute_plan_interactive(
+        &actions,
+        common.dry_run,
+        common.age_key_file.as_deref(),
+        &resolved.recipients,
+        common.force,
+        common.backup,
+        Some(&common.backup_dir_path()),
+        Some(&common.target_path()),
+        Some(&resolved.permissions),
+        common.adopt,
+        common.interactive,
+    )?;
+    enstow::hook::run_post_apply_hooks(&resolved)?;
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     clap_complete::CompleteEnv::with_factory(Cli::command)
         .completer("enstow")
@@ -121,33 +155,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Some(Commands::Apply(args)) => {
-            let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
-            let common = resolved.to_common_args();
-            if common.prune {
-                let stale_actions = stow::plan_prune(&common)?;
-                stow::execute_unstow_plan_with_shred(
-                    &stale_actions,
-                    &common.target_path(),
-                    common.dry_run,
-                    common.shred,
-                )?;
-            }
-            let actions = stow::plan_stow(&common)?;
-            enstow::hook::run_pre_apply_hooks(&resolved)?;
-            stow::execute_plan_interactive(
-                &actions,
-                common.dry_run,
-                common.age_key_file.as_deref(),
-                &resolved.recipients,
-                common.force,
-                common.backup,
-                Some(&common.backup_dir_path()),
-                Some(&common.target_path()),
-                Some(&resolved.permissions),
-                common.adopt,
-                common.interactive,
-            )?;
-            enstow::hook::run_post_apply_hooks(&resolved)?;
+            run_apply(&args, config.as_ref())?;
         }
         Some(Commands::Restow(args)) => {
             let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
@@ -537,24 +545,7 @@ fn main() -> anyhow::Result<()> {
         }
         None => {
             // Default to applying with root common args
-            let resolved = enstow::config::resolve_common_args(&cli.common, config.as_ref())?;
-            let common = resolved.to_common_args();
-            let actions = stow::plan_stow(&common)?;
-            enstow::hook::run_pre_apply_hooks(&resolved)?;
-            stow::execute_plan_interactive(
-                &actions,
-                common.dry_run,
-                common.age_key_file.as_deref(),
-                &resolved.recipients,
-                common.force,
-                common.backup,
-                Some(&common.backup_dir_path()),
-                Some(&common.target_path()),
-                Some(&resolved.permissions),
-                common.adopt,
-                common.interactive,
-            )?;
-            enstow::hook::run_post_apply_hooks(&resolved)?;
+            run_apply(&cli.common, config.as_ref())?;
         }
     }
 

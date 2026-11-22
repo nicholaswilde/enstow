@@ -218,11 +218,14 @@ enstow apply --adopt zsh
 
 ## :scissors: Pruning Stale Symlinks
 
-When removing or renaming files in your dotfiles repository, stale links may remain in your target directory:
+When removing or renaming files in your dotfiles repository, stale links may remain in your target directory. Pruning works with `enstow apply --prune`, the default no-subcommand `enstow --prune` (or `prune = true` in config), `enstow restow`, and `enstow unstow`. Stale-symlink scans are scoped to managed target subtrees with dynamic depth so deeply nested managed files (6+ levels deep) are pruned without walking unrelated directories across `$HOME`:
 
 ```bash
 # Automatically remove broken or orphaned symlinks for managed packages during apply
 enstow apply --prune zsh
+
+# Equivalent using default no-subcommand apply
+enstow --prune zsh
 
 # Preview pruning actions
 enstow apply --prune --dry-run zsh
