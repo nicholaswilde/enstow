@@ -19,6 +19,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `status` | — | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--check] [--json]` |
 | `diff` | — | Show unified diff between dotfiles and target destination | `enstow diff [--mask-secrets] [--json]` |
 | `doctor` | `lint` | Audit system health, secret hygiene, permissions, symlinks, and git staged files | `enstow doctor [--staged] [--json]` |
+| `keygen` | — | Generate an X25519 `age` identity key file with `0600` permissions and print its public key | `enstow keygen [-o <path>] [--force]` |
 | `encrypt` | — | Encrypt a secret dotfile into `.age` format | `enstow encrypt <file> [-r <key>]` |
 | `decrypt` | — | Decrypt an `age` or `sops` encrypted secret file to stdout or file | `enstow decrypt <file> [-o <out>]` |
 | `edit` | — | Interactively decrypt, edit in `$EDITOR`, re-encrypt, and optionally `--apply` an `age` secret file | `enstow edit <file.age> [--apply]` |
@@ -27,7 +28,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `man` | — | Output UNIX roff man page | `enstow man > assets/enstow.1` |
 | `self-update` | `update` | Update `enstow` to the latest or specified GitHub release | `enstow self-update [--check] [--yes]` |
 
-For secret encryption, decryption, editing, rekeying, SSH keys, `.tmpl` templates, and scrubbing details, see [Secrets & Templates](./secrets.md).
+For key generation, secret encryption, decryption, editing, rekeying, SSH keys, `.tmpl` templates, and scrubbing details, see [Secrets & Templates](./secrets.md).
 
 ## :rocket: Bootstrapping a New Machine (`enstow init`)
 
@@ -193,7 +194,7 @@ When a target destination already exists with different content or unmanaged fil
 
 - **Dry-run (`-n`, `--dry-run`):** Previews what actions would occur without touching disk.
 - **Interactive (`-I`, `--interactive`):** Prompts on each collision or secret drift with `[d]iff`, `[o]verwrite`, `[a]dopt`, or `[s]kip`.
-- **Adopt (`--adopt`):** Copies conflicting target files into the source package (overwriting source) and re-links.
+- **Adopt (`--adopt`):** Copies conflicting target files into the source package (overwriting source) and re-links; conflicting decrypted secrets are re-encrypted back to `.age` using configured recipients.
 - **Force (`-f`, `--force`):** Overwrites conflicting target files or replaces differing symlinks.
 - **Backup (`-b`, `--backup`):** Relocates colliding destination files out of the way before creating the new link or secret. Only creates the backup directory lazily when at least one file is actually backed up (skipped on `--dry-run` or zero conflicts) and prints the backup path summary when files are moved.
 - **Backup Directory (`--backup-dir <path>`):** Sets custom destination for backups. Defaults to `$TARGET/.enstow-backup/{timestamp}`, expanding `{timestamp}` to a `YYYYMMDD_HHMMSS` UTC subdirectory per run (with `_1`, `_2`, ... suffixes if multiple runs occur within the same second) so repeated `--backup` runs never overwrite earlier backups. Explicit `--backup-dir` paths also expand `{timestamp}` if present, or stay literal when omitted.

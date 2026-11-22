@@ -896,7 +896,7 @@ pub fn write_secure_file_with_mode(
         }
     }
 
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| EnstowError::Io {
             path: parent.to_path_buf(),
             source: e,
@@ -1135,6 +1135,58 @@ pub fn default_age_key_file() -> PathBuf {
         .join("sops")
         .join("age")
         .join("keys.txt")
+}
+
+/// Result of generating a new X25519 age identity key file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedAgeKey {
+    pub path: PathBuf,
+    pub public_key: String,
+}
+
+/// Generate a new X25519 `age` identity key file in standard `age-keygen` format
+/// (`# created: ...`, `# public key: age1...`, `AGE-SECRET-KEY-...`) with `0600` permissions.
+///
+/// Refuses to overwrite an existing key file unless `force` is `true`, and rejects directory paths.
+pub fn generate_age_key(output_path: &Path, force: bool) -> Result<GeneratedAgeKey, EnstowError> {
+    use age::secrecy::ExposeSecret;
+
+    if output_path.is_dir() {
+        return Err(EnstowError::Config(format!(
+            "Key output path is a directory: {}",
+            output_path.display()
+        )));
+    }
+
+    if !force && std::fs::symlink_metadata(output_path).is_ok() {
+        return Err(EnstowError::Collision {
+            path: output_path.to_path_buf(),
+        });
+    }
+
+    let identity = age::x25519::Identity::generate();
+    let public_key = identity.to_public().to_string();
+    let secret_key = identity.to_string();
+    let created = crate::stow::format_utc_rfc3339(std::time::SystemTime::now());
+    let mut content = format!(
+        "# created: {created}\n# public key: {public_key}\n{}\n",
+        secret_key.expose_secret()
+    );
+
+    let write_res = write_secure_file(output_path, content.as_bytes(), force);
+    content.zeroize();
+    write_res?;
+
+    info!(
+        "Generated age identity key at '{}' (public key: {})",
+        output_path.display(),
+        public_key
+    );
+
+    Ok(GeneratedAgeKey {
+        path: output_path.to_path_buf(),
+        public_key,
+    })
 }
 
 pub fn has_valid_identity(path: &Path) -> bool {

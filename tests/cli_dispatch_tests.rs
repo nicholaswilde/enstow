@@ -742,3 +742,159 @@ fn test_cli_timestamped_backup_runs_and_summary() {
         "literal_v1\n"
     );
 }
+
+#[test]
+fn test_cli_keygen_default_custom_overwrite_and_roundtrip() {
+    let bin = env!("CARGO_BIN_EXE_enstow");
+
+    match Command::new(bin).arg("--version").output() {
+        Ok(output) if output.status.success() => {}
+        _ => {
+            eprintln!("Skipping CLI keygen test: target binary cannot be executed");
+            return;
+        }
+    }
+
+    let temp = tempdir().unwrap();
+    let xdg_dir = temp.path().join("xdg");
+    let work_dir = temp.path().join("work");
+    fs::create_dir_all(&xdg_dir).unwrap();
+    fs::create_dir_all(&work_dir).unwrap();
+
+    // 1. Default output uses XDG_CONFIG_HOME/sops/age/keys.txt
+    let default_key_path = xdg_dir.join("sops").join("age").join("keys.txt");
+    let out = Command::new(bin)
+        .current_dir(&work_dir)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .args(["keygen"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "default keygen failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(default_key_path.is_file());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let pubkey_line = stdout
+        .lines()
+        .find(|l| l.starts_with("Public key: age1"))
+        .unwrap_or_else(|| panic!("missing public key in stdout:\n{stdout}"));
+    let pubkey = pubkey_line.trim_start_matches("Public key: ").trim();
+    assert!(!stdout.contains("AGE-SECRET-KEY-"));
+    assert!(!stderr.contains("AGE-SECRET-KEY-"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&default_key_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    // 2. Refuses to overwrite existing default key without --force
+    let orig_default_content = fs::read_to_string(&default_key_path).unwrap();
+    let dup = Command::new(bin)
+        .current_dir(&work_dir)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .args(["keygen"])
+        .output()
+        .unwrap();
+    assert!(!dup.status.success(), "expected overwrite refusal");
+    assert_eq!(
+        fs::read_to_string(&default_key_path).unwrap(),
+        orig_default_content
+    );
+
+    // 3. Overwrites when --force is passed
+    let forced = Command::new(bin)
+        .current_dir(&work_dir)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .args(["keygen", "--force"])
+        .output()
+        .unwrap();
+    assert!(
+        forced.status.success(),
+        "forced keygen failed: {}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    let new_default_content = fs::read_to_string(&default_key_path).unwrap();
+    assert_ne!(orig_default_content, new_default_content);
+
+    // 4. Relative bare filename with -o in current working directory + full encrypt/decrypt round-trip
+    let out_rel = Command::new(bin)
+        .current_dir(&work_dir)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .args(["keygen", "-o", "local-keys.txt"])
+        .output()
+        .unwrap();
+    assert!(
+        out_rel.status.success(),
+        "relative -o keygen failed: {}",
+        String::from_utf8_lossy(&out_rel.stderr)
+    );
+    let local_key = work_dir.join("local-keys.txt");
+    assert!(local_key.is_file());
+    let rel_stdout = String::from_utf8_lossy(&out_rel.stdout);
+    let rel_pubkey = rel_stdout
+        .lines()
+        .find(|l| l.starts_with("Public key: age1"))
+        .unwrap_or_else(|| panic!("missing public key in stdout:\n{rel_stdout}"))
+        .trim_start_matches("Public key: ")
+        .trim();
+    assert_ne!(pubkey, rel_pubkey);
+
+    let plain = work_dir.join("token.env");
+    let encrypted = work_dir.join("token.env.age");
+    fs::write(&plain, "TOKEN=from_enstow_keygen\n").unwrap();
+
+    let enc = Command::new(bin)
+        .current_dir(&work_dir)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .args([
+            "encrypt",
+            plain.to_str().unwrap(),
+            "-o",
+            encrypted.to_str().unwrap(),
+            "-r",
+            rel_pubkey,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        enc.status.success(),
+        "encrypt with generated pubkey failed: {}",
+        String::from_utf8_lossy(&enc.stderr)
+    );
+
+    let dec = Command::new(bin)
+        .current_dir(&work_dir)
+        .env("XDG_CONFIG_HOME", &xdg_dir)
+        .env_remove("ENSTOW_CONFIG")
+        .args([
+            "decrypt",
+            encrypted.to_str().unwrap(),
+            "--age-key-file",
+            local_key.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        dec.status.success(),
+        "decrypt with generated key failed: {}",
+        String::from_utf8_lossy(&dec.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&dec.stdout),
+        "TOKEN=from_enstow_keygen\n"
+    );
+}

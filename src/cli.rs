@@ -268,6 +268,16 @@ pub enum Commands {
     Unstow(CommonArgs),
     /// Scrub dotfiles: securely shred and remove decrypted secrets and symlinks
     Scrub(CommonArgs),
+    /// Generate a new X25519 age identity key file
+    Keygen {
+        /// Output path for the generated age identity key file (defaults to ~/.config/sops/age/keys.txt)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Overwrite an existing key file
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Encrypt a secret dotfile
     Encrypt {
         /// File to encrypt
@@ -606,6 +616,35 @@ mod tests {
                 assert!(encrypt);
             }
             _ => panic!("Expected Add command"),
+        }
+
+        // keygen
+        let cli = Cli::try_parse_from(["enstow", "keygen"]).unwrap();
+        match cli.command {
+            Some(Commands::Keygen { output, force }) => {
+                assert_eq!(output, None);
+                assert!(!force);
+            }
+            _ => panic!("Expected Keygen command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["enstow", "keygen", "-o", "custom/keys.txt", "--force"]).unwrap();
+        match cli.command {
+            Some(Commands::Keygen { output, force }) => {
+                assert_eq!(output, Some(PathBuf::from("custom/keys.txt")));
+                assert!(force);
+            }
+            _ => panic!("Expected Keygen command with -o and --force"),
+        }
+
+        let cli = Cli::try_parse_from(["enstow", "keygen", "--output", "keys.txt", "-f"]).unwrap();
+        match cli.command {
+            Some(Commands::Keygen { output, force }) => {
+                assert_eq!(output, Some(PathBuf::from("keys.txt")));
+                assert!(force);
+            }
+            _ => panic!("Expected Keygen command with --output and -f"),
         }
 
         // encrypt

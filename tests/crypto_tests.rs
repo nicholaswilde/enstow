@@ -2,7 +2,7 @@ use age::secrecy::ExposeSecret;
 use age::Recipient;
 use enstow::crypto::{
     decrypt_age, decrypt_to_memory, detect_secret_type, edit_file_age, encrypt_file_age,
-    target_plaintext_name, write_secure_file, SecretType,
+    generate_age_key, has_valid_identity, target_plaintext_name, write_secure_file, SecretType,
 };
 use enstow::error::EnstowError;
 use std::fs;
@@ -383,4 +383,100 @@ fn test_decrypt_sops_all_branches() {
     fs::write(&mock_sops, "#!/bin/sh\necho 'decrypted payload'\nexit 0\n").unwrap();
     let out = enstow::crypto::decrypt_sops(&mock_file).unwrap();
     assert_eq!(String::from_utf8_lossy(&out).trim(), "decrypted payload");
+}
+
+#[test]
+fn test_generate_age_key_format_permissions_and_roundtrip() {
+    let dir = tempdir().unwrap();
+    let key_path = dir.path().join("sops").join("age").join("keys.txt");
+
+    let generated = generate_age_key(&key_path, false).unwrap();
+    assert_eq!(generated.path, key_path);
+    assert!(
+        generated.public_key.starts_with("age1"),
+        "expected bech32 age1 public key, got: {}",
+        generated.public_key
+    );
+    assert!(key_path.is_file());
+    assert!(has_valid_identity(&key_path));
+
+    // Verify standard age-keygen format (# created:, # public key:, AGE-SECRET-KEY-)
+    let content = fs::read_to_string(&key_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 3, "unexpected key file lines:\n{content}");
+    assert!(
+        lines[0].starts_with("# created: ") && lines[0].ends_with('Z'),
+        "expected RFC 3339 UTC created header, got: {}",
+        lines[0]
+    );
+    assert_eq!(lines[1], format!("# public key: {}", generated.public_key));
+    assert!(
+        lines[2].starts_with("AGE-SECRET-KEY-1"),
+        "expected AGE-SECRET-KEY-1 secret line"
+    );
+
+    // Verify secret parses cleanly and matches returned public key
+    let parsed: age::x25519::Identity = lines[2].parse().expect("valid age x25519 identity");
+    assert_eq!(parsed.to_public().to_string(), generated.public_key);
+
+    // Verify strict 0600 permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    // Verify generated key works for encrypt + decrypt round-trip
+    let plain_path = dir.path().join("secret.env");
+    let enc_path = dir.path().join("secret.env.age");
+    fs::write(&plain_path, b"API_TOKEN=generated_key_roundtrip\n").unwrap();
+
+    encrypt_file_age(
+        &plain_path,
+        &enc_path,
+        std::slice::from_ref(&generated.public_key),
+        None,
+        false,
+    )
+    .unwrap();
+    let decrypted = decrypt_age(&enc_path, Some(&key_path)).unwrap();
+    assert_eq!(decrypted, b"API_TOKEN=generated_key_roundtrip\n");
+}
+
+#[test]
+fn test_generate_age_key_overwrite_protection_and_force() {
+    let dir = tempdir().unwrap();
+    let key_path = dir.path().join("keys.txt");
+
+    let first = generate_age_key(&key_path, false).unwrap();
+    let first_content = fs::read_to_string(&key_path).unwrap();
+
+    // Refuses to overwrite existing key without --force
+    let err = generate_age_key(&key_path, false).unwrap_err();
+    assert!(matches!(err, EnstowError::Collision { .. }));
+    assert_eq!(fs::read_to_string(&key_path).unwrap(), first_content);
+
+    // Overwrites when force = true and preserves 0600 permissions
+    let second = generate_age_key(&key_path, true).unwrap();
+    assert_ne!(first.public_key, second.public_key);
+    let second_content = fs::read_to_string(&key_path).unwrap();
+    assert_ne!(first_content, second_content);
+    assert!(has_valid_identity(&key_path));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    // Rejects directory path even when force = true
+    let existing_dir = dir.path().join("existing_dir");
+    fs::create_dir_all(&existing_dir).unwrap();
+    fs::write(existing_dir.join("keep.txt"), "important").unwrap();
+    let dir_err = generate_age_key(&existing_dir, true).unwrap_err();
+    assert!(matches!(dir_err, EnstowError::Config(_)));
+    assert!(existing_dir.is_dir());
+    assert!(existing_dir.join("keep.txt").is_file());
 }

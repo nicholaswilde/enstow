@@ -1453,8 +1453,7 @@ fn remove_target(target: &Path, meta: &std::fs::Metadata) -> Result<(), EnstowEr
 /// Placeholder token expanded to a `YYYYMMDD_HHMMSS` UTC run timestamp in backup directory paths.
 pub const BACKUP_TIMESTAMP_PLACEHOLDER: &str = "{timestamp}";
 
-/// Format a `SystemTime` as a sortable `YYYYMMDD_HHMMSS` UTC timestamp without external crates.
-pub fn format_backup_timestamp(time: std::time::SystemTime) -> String {
+fn utc_datetime_parts(time: std::time::SystemTime) -> (i64, u64, u64, u64, u64, u64) {
     let secs = time
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1477,7 +1476,19 @@ pub fn format_backup_timestamp(time: std::time::SystemTime) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { y + 1 } else { y };
 
+    (year, month, day, hour, minute, second)
+}
+
+/// Format a `SystemTime` as a sortable `YYYYMMDD_HHMMSS` UTC timestamp without external crates.
+pub fn format_backup_timestamp(time: std::time::SystemTime) -> String {
+    let (year, month, day, hour, minute, second) = utc_datetime_parts(time);
     format!("{year:04}{month:02}{day:02}_{hour:02}{minute:02}{second:02}")
+}
+
+/// Format a `SystemTime` as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) without external crates.
+pub fn format_utc_rfc3339(time: std::time::SystemTime) -> String {
+    let (year, month, day, hour, minute, second) = utc_datetime_parts(time);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 fn expand_backup_timestamp(template: &Path, replacement: &str) -> Option<PathBuf> {
@@ -2018,6 +2029,17 @@ mod tests {
         assert_eq!(at(1_795_308_300), "20261122_004500");
         // 2100-03-01 00:00:00 UTC (non-leap century year)
         assert_eq!(at(4_107_542_400), "21000301_000000");
+    }
+
+    #[test]
+    fn test_format_utc_rfc3339() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let at = |secs: u64| format_utc_rfc3339(UNIX_EPOCH + Duration::from_secs(secs));
+        assert_eq!(at(0), "1970-01-01T00:00:00Z");
+        assert_eq!(at(951_827_696), "2000-02-29T12:34:56Z");
+        assert_eq!(at(1_709_251_199), "2024-02-29T23:59:59Z");
+        assert_eq!(at(1_795_308_300), "2026-11-22T00:45:00Z");
     }
 
     #[test]

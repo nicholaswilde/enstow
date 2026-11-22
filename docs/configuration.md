@@ -223,6 +223,9 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
     }
     ```
 
+!!! tip
+    Need an `age` identity key for `age_key_file` and a public key for `recipients`? Run `enstow keygen` to create `~/.config/sops/age/keys.txt` with `0600` permissions and print its `age1...` public recipient — see [Secrets & Templates](./secrets.md#generating-an-age-identity-key-enstow-keygen).
+
 ## :no_entry_sign: Ignore Rules
 
 Ignore specific files or patterns during dotfile operations using Git-style ignore syntax:
@@ -368,16 +371,18 @@ Decrypted secrets and rendered `.tmpl` files default to mode `0600` (`-rw-------
 | `ENSTOW_BACKUP_DIR` | `backup_dir` | `--backup-dir` | Path to directory where conflicting files are relocated (expands `{timestamp}` to `YYYYMMDD_HHMMSS` UTC per run; literal when omitted) | `$TARGET/.enstow-backup/{timestamp}` |
 | `ENSTOW_PRUNE` | `prune` | `--prune` | Prune stale managed symlinks during apply (`true`/`false`) | `false` |
 | `ENSTOW_ADOPT` | `adopt` | `--adopt` | Adopt conflicting destination files into source package during apply (`true`/`false`) | `false` |
+| `ENSTOW_INTERACTIVE` | N/A | `-I`, `--interactive` | Prompt interactively on target collisions and secret drift (`true`/`false`) | `false` |
 | `ENSTOW_NO_HOOKS` | `no_hooks` | `--no-hooks` | Skip execution of pre- and post-lifecycle hooks (`true`/`false`) | `false` |
 | `ENSTOW_SHRED` | `shred` | `--shred` | Securely zeroize decrypted secrets before unlinking (`true`/`false`) | `false` |
 | `ENSTOW_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | `age_key_file` | `--age-key-file` | Path to age identity key file for encryption/decryption | None |
+| `ENSTOW_PASSPHRASE` | N/A | `-p`, `--passphrase` | Non-interactive passphrase for passphrase-encrypted `.age` files | None (prompts interactively) |
 | `ENSTOW_SSH_KEY_FILE` | N/A | `--age-key-file` | Path to SSH private key identity file for decryption / recipient derivation | `~/.ssh/id_ed25519`, `~/.ssh/id_rsa` |
 | `ENSTOW_SSH_PASSPHRASE` / `SSH_PASSPHRASE` | N/A | N/A | Passphrase for encrypted SSH private key identities | None (prompts interactively) |
 | `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | `recipients` | `-r`, `--recipient` | Age or SSH recipient public keys for encryption | None |
 | `ENSTOW_PACKAGES` | `packages` | `PACKAGES` | Default packages to stow when none specified | None |
 | `ENSTOW_PROFILE` | `default_profile` / `profiles` | `--profile` | Profile to select packages from configuration | None |
 | `ENSTOW_IGNORE` | `ignore` | `-i`, `--ignore` | Additional glob patterns to ignore (comma or colon separated) | None |
-| `ENSTOW_EDITOR` / `VISUAL` / `EDITOR` | `editor` | `--editor` | Editor command for interactive secret editing (`enstow edit`) | `nano` |
+| `ENSTOW_EDITOR` / `VISUAL` / `EDITOR` | `editor` | `--editor` | Editor command for interactive secret editing (`enstow edit`) | `vi` (Unix) / `notepad` (Windows) |
 | `ENSTOW_JSON` | `json` | `--json` | Emit `status`, `diff`, and `doctor` output in JSON format (`true`/`false`) | `false` |
 | `ENSTOW_MASK_SECRETS` | `mask_secrets` | `--mask-secrets` | Mask sensitive secret contents in `enstow diff` output (`true`/`false`) | `false` |
 | `ENSTOW_LOG_LEVEL` | `log_level` | `--log-level` | Log filter level (`trace`, `debug`, `info`, `warn`, `error`, `off`) | `info` |

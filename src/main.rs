@@ -327,6 +327,12 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Keygen { output, force }) => {
+            let output_path = output.unwrap_or_else(enstow::crypto::default_age_key_file);
+            let generated = enstow::crypto::generate_age_key(&output_path, force)?;
+            println!("Generated age identity key: {}", generated.path.display());
+            println!("Public key: {}", generated.public_key);
+        }
         Some(Commands::Encrypt {
             file,
             output,

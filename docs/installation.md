@@ -97,7 +97,7 @@ GH_TOKEN=ghp_... enstow self-update
 
 - [Rust toolchain](https://rustup.rs/) (1.88+)
 - [Task](https://taskfile.dev/) (optional, recommended)
-- [`sops`](https://getsops.io/) (optional, required only when decrypting `.sops.*` files; `age` encryption and decryption are built into `enstow`)
+- [`sops`](https://getsops.io/) (optional, required only when decrypting `.sops.*` files; `age` key generation, encryption, and decryption are built into `enstow`)
 
 ### Install or Build Locally
 

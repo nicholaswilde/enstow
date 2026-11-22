@@ -56,6 +56,9 @@ enstow apply --dry-run
 # Apply specific dotfile packages
 enstow apply zsh nvim git
 
+# Generate a built-in age identity key (~/.config/sops/age/keys.txt)
+enstow keygen
+
 # Ingest an existing secret file into a package encrypted with age
 enstow add ~/.secrets/api.env -p secrets --encrypt
 

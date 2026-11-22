@@ -18,6 +18,23 @@
 | `.sops.yaml` (exact) | `sops` CLI | `.sops.yaml` | `0600` (`-rw-------`) |
 | `<name>.tmpl` | Template renderer | `<name>` | `0600` (`-rw-------`) |
 
+## :key: Generating an Age Identity Key (`enstow keygen`)
+
+Generate an X25519 `age` identity key file in standard `age-keygen` format (`# created:`, `# public key:`, `AGE-SECRET-KEY-...`) with strict `0600` permissions, without needing the external `age` CLI:
+
+```bash
+# Generate key at the default location (~/.config/sops/age/keys.txt or $XDG_CONFIG_HOME/sops/age/keys.txt)
+enstow keygen
+
+# Write the key to a custom path
+enstow keygen -o ~/keys/work.txt
+
+# Overwrite an existing key file (refused by default without --force)
+enstow keygen --force
+```
+
+`enstow keygen` prints the generated public recipient (`age1...`) so you can paste it directly into `recipients = ["age1..."]` in `.enstow.toml`.
+
 ## :lock: Encrypting Secrets (`enstow encrypt`)
 
 Encrypt a plaintext dotfile into an `.age` encrypted file:
@@ -151,7 +168,7 @@ Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in
 
 ## :fire: Secure Secret Scrubbing & Permission Hygiene
 
-- **Strict Default Permissions (`0600`):** Every decrypted secret and rendered `.tmpl` target is created with mode `0600` (`-rw-------`) on Unix. Customize modes per glob or per package via `[permissions]` and `[package.<name>.permissions]` in [Configuration](./configuration.md#custom-target-permissions).
+- **Strict Default Permissions (`0600`):** Every generated `age` identity key (`enstow keygen`), decrypted secret, and rendered `.tmpl` target is created with mode `0600` (`-rw-------`) on Unix. Re-running `enstow apply` skips already-synced secrets idempotently while healing loose permissions. Customize target modes per glob or per package via `[permissions]` and `[package.<name>.permissions]` in [Configuration](./configuration.md#custom-target-permissions).
 
 - **Zeroize-Before-Unlink (`--shred` / `scrub`):** When decommissioning a machine or removing sensitive dotfiles, overwrite decrypted target files with zeros and flush to disk before unlinking:
 
