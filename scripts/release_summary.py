@@ -41,6 +41,8 @@ def main():
     parser.add_argument("--thanks", "--special-thanks", dest="thanks", default=None, help="Person to thank or full thanks message")
     parser.add_argument("--for", "--reason", dest="thanks_reason", default=None, help="Reason or contribution to thank the person for")
     parser.add_argument("--dry-run", action="store_true", help="Print summary without updating GitHub release")
+    parser.add_argument("--draft", action="store_true", help="Mark the release as a draft when editing")
+    parser.add_argument("--prerelease", action="store_true", help="Mark the release as a pre-release when editing")
     args = parser.parse_args()
 
     repo_slug = get_repo_slug()
@@ -145,10 +147,15 @@ def main():
     with open('/tmp/release_notes.md', 'w') as f:
         f.write(notes)
         
-    print(f"Updating draft release for {latest}...")
+    print(f"Updating GitHub release for {latest}...")
     try:
-        url = run_cmd(f"gh release edit {latest} --draft -F /tmp/release_notes.md")
-        print(f"Draft release updated: {url}")
+        edit_flags = ""
+        if args.draft:
+            edit_flags += " --draft"
+        if args.prerelease:
+            edit_flags += " --prerelease"
+        url = run_cmd(f"gh release edit {latest}{edit_flags} -F /tmp/release_notes.md")
+        print(f"Release updated: {url}")
     except Exception as e:
         print(f"Failed to edit release ({e}), attempting to create draft release...")
         try:

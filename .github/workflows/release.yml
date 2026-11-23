@@ -272,9 +272,21 @@ jobs:
             git push origin main
           fi
 
+  publish-release:
+    name: publish-release
+    needs: ['create-release', 'build-release']
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - name: Publish GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit ${{ github.ref_name }} --draft=false --prerelease=false --repo ${{ github.repository }}
+
   update-homebrew-tap:
     name: update-homebrew-tap
-    needs: ['create-release', 'build-release']
+    needs: ['create-release', 'publish-release']
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
@@ -291,7 +303,7 @@ jobs:
 
   update-scoop-bucket:
     name: update-scoop-bucket
-    needs: ['create-release', 'build-release']
+    needs: ['create-release', 'publish-release']
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
