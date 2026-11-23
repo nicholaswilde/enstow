@@ -219,19 +219,26 @@ fn main() -> anyhow::Result<()> {
             common,
             json,
             check,
+            changes_only,
         }) => {
             let resolved_common =
                 enstow::config::resolve_common_args(&common, config.as_ref())?.to_common_args();
             let json = enstow::config::resolve_json(json, config.as_ref());
             let actions = stow::plan_stow(&resolved_common)?;
             let statuses = stow::check_status(&actions, resolved_common.age_key_file.as_deref())?;
-            let all_synced = statuses
-                .iter()
-                .all(|item| item.status == stow::EntryStatus::Synced);
-            if json {
-                println!("{}", serde_json::to_string_pretty(&statuses)?);
+            let summary = stow::StatusSummary::from_statuses(&statuses);
+            let displayed: Vec<&stow::FileActionStatus> = if changes_only {
+                statuses
+                    .iter()
+                    .filter(|item| item.status != stow::EntryStatus::Synced)
+                    .collect()
             } else {
-                for item in &statuses {
+                statuses.iter().collect()
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&displayed)?);
+            } else {
+                for item in &displayed {
                     let status_str = match item.status {
                         stow::EntryStatus::Synced => "\x1b[32mSYNCED\x1b[0m    ",
                         stow::EntryStatus::Missing => "\x1b[33mMISSING\x1b[0m   ",
@@ -246,8 +253,13 @@ fn main() -> anyhow::Result<()> {
                         item.action.source().display()
                     );
                 }
+                if displayed.is_empty() {
+                    println!("{summary}");
+                } else {
+                    println!("\n{summary}");
+                }
             }
-            if check && !all_synced {
+            if check && !summary.all_synced() {
                 std::process::exit(1);
             }
         }

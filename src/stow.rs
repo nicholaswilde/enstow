@@ -46,6 +46,45 @@ pub struct FileActionStatus {
     pub status: EntryStatus,
 }
 
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub struct StatusSummary {
+    pub synced: usize,
+    pub missing: usize,
+    pub conflict: usize,
+    pub modified: usize,
+    pub unverified: usize,
+}
+
+impl StatusSummary {
+    pub fn from_statuses(statuses: &[FileActionStatus]) -> Self {
+        let mut summary = Self::default();
+        for item in statuses {
+            match item.status {
+                EntryStatus::Synced => summary.synced += 1,
+                EntryStatus::Missing => summary.missing += 1,
+                EntryStatus::Conflict => summary.conflict += 1,
+                EntryStatus::Modified => summary.modified += 1,
+                EntryStatus::Unverified => summary.unverified += 1,
+            }
+        }
+        summary
+    }
+
+    pub fn all_synced(&self) -> bool {
+        self.missing == 0 && self.conflict == 0 && self.modified == 0 && self.unverified == 0
+    }
+}
+
+impl std::fmt::Display for StatusSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Status summary: {} synced, {} missing, {} conflict, {} modified, {} unverified.",
+            self.synced, self.missing, self.conflict, self.modified, self.unverified
+        )
+    }
+}
+
 pub fn check_status(
     actions: &[FileAction],
     age_key_file: Option<&Path>,

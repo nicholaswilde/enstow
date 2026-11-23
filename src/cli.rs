@@ -383,6 +383,10 @@ pub enum Commands {
         /// Exit with non-zero status code if any entry is not synced
         #[arg(long, alias = "exit-code")]
         check: bool,
+
+        /// Show only entries that are not synced (hide SYNCED rows)
+        #[arg(long, alias = "short")]
+        changes_only: bool,
     },
     /// Show diff between dotfiles and target destination
     Diff {

@@ -16,7 +16,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `restow` | — | Clean stale symlinks/secrets and re-apply packages in one step | `enstow restow [PACKAGES...]` |
 | `unstow` | — | Remove symlinks and decrypted secret files managed by `enstow` | `enstow unstow [PACKAGES...] [--shred]` |
 | `scrub` | — | Securely shred and remove decrypted secrets and symlinks | `enstow scrub [PACKAGES...]` |
-| `status` | — | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--check] [--json]` |
+| `status` | — | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--changes-only] [--check] [--json]` |
 | `diff` | — | Show unified diff between dotfiles and target destination | `enstow diff [--mask-secrets] [--json]` |
 | `doctor` | `lint` | Audit system health, secret hygiene, permissions, symlinks, and git staged/tracked files | `enstow doctor [--staged \| --tracked] [--json]` |
 | `keygen` | — | Generate an X25519 `age` identity key file with `0600` permissions and print its public key | `enstow keygen [-o <path>] [--force]` |
@@ -125,8 +125,11 @@ enstow scrub zsh nvim
 Check sync, missing, conflicting, modified (drifted), or unverified state for dotfiles:
 
 ```bash
-# Human-readable status overview
+# Human-readable status overview with summary counts
 enstow status
+
+# Hide SYNCED rows to surface missing, conflicting, or drifted entries (alias: --short)
+enstow status --changes-only
 
 # Status with explicit age key for secret drift verification
 enstow status --age-key-file ~/.config/sops/age/keys.txt

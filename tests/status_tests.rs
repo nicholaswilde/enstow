@@ -2,7 +2,9 @@ use age::secrecy::ExposeSecret;
 use age::Recipient;
 use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
-use enstow::stow::{check_status, plan_stow, EntryStatus};
+use enstow::stow::{
+    check_status, plan_stow, EntryStatus, FileAction, FileActionStatus, StatusSummary,
+};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -324,4 +326,219 @@ fn test_cli_status_check_exit_codes() {
     let conflict = run_status(&["--check"]);
     assert!(!conflict.status.success());
     assert!(String::from_utf8_lossy(&conflict.stdout).contains("CONFLICT"));
+}
+
+#[test]
+fn test_cli_parsing_status_changes_only_and_short_alias() {
+    let default_cli = Cli::try_parse_from(["enstow", "status"]).unwrap();
+    match default_cli.command {
+        Some(Commands::Status { changes_only, .. }) => assert!(!changes_only),
+        other => panic!("Expected Status, got {:?}", other),
+    }
+
+    let long_cli = Cli::try_parse_from(["enstow", "status", "--changes-only"]).unwrap();
+    match long_cli.command {
+        Some(Commands::Status { changes_only, .. }) => assert!(changes_only),
+        other => panic!("Expected Status, got {:?}", other),
+    }
+
+    let alias_cli =
+        Cli::try_parse_from(["enstow", "status", "--short", "--json", "--check"]).unwrap();
+    match alias_cli.command {
+        Some(Commands::Status {
+            json,
+            check,
+            changes_only,
+            ..
+        }) => {
+            assert!(json);
+            assert!(check);
+            assert!(changes_only);
+        }
+        other => panic!("Expected Status, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_status_summary_counts_and_display() {
+    let mk = |name: &str, status: EntryStatus| FileActionStatus {
+        action: FileAction::Symlink {
+            source: Path::new("src").join(name),
+            target: Path::new("tgt").join(name),
+        },
+        status,
+    };
+
+    let mixed = vec![
+        mk("a", EntryStatus::Synced),
+        mk("b", EntryStatus::Synced),
+        mk("c", EntryStatus::Missing),
+        mk("d", EntryStatus::Conflict),
+        mk("e", EntryStatus::Modified),
+        mk("f", EntryStatus::Unverified),
+    ];
+    let summary = StatusSummary::from_statuses(&mixed);
+    assert_eq!(summary.synced, 2);
+    assert_eq!(summary.missing, 1);
+    assert_eq!(summary.conflict, 1);
+    assert_eq!(summary.modified, 1);
+    assert_eq!(summary.unverified, 1);
+    assert!(!summary.all_synced());
+    assert_eq!(
+        summary.to_string(),
+        "Status summary: 2 synced, 1 missing, 1 conflict, 1 modified, 1 unverified."
+    );
+
+    let all_ok = vec![mk("a", EntryStatus::Synced)];
+    let ok_summary = StatusSummary::from_statuses(&all_ok);
+    assert!(ok_summary.all_synced());
+    assert_eq!(
+        ok_summary.to_string(),
+        "Status summary: 1 synced, 0 missing, 0 conflict, 0 modified, 0 unverified."
+    );
+}
+
+#[test]
+fn test_cli_status_changes_only_summary_json_and_check() {
+    let bin = env!("CARGO_BIN_EXE_enstow");
+    match Command::new(bin).arg("--version").output() {
+        Ok(o) if o.status.success() => {}
+        _ => return,
+    }
+
+    let source_dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+    let key_file = key_dir.path().join("key.txt");
+
+    // 1. Synced symlink
+    let synced_src = source_dir.path().join(".bashrc");
+    fs::write(&synced_src, "export OK=1\n").unwrap();
+    let synced_tgt = target_dir.path().join(".bashrc");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&synced_src, &synced_tgt).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&synced_src, &synced_tgt).unwrap();
+
+    // 2. Synced secret
+    let secret_src = source_dir.path().join(".tokens.age");
+    create_test_age_key_and_encrypted_file(&key_file, &secret_src, b"TOKEN=ok\n");
+    fs::write(target_dir.path().join(".tokens"), "TOKEN=ok\n").unwrap();
+
+    // 3. Missing file
+    let missing_src = source_dir.path().join(".vimrc");
+    fs::write(&missing_src, "set number\n").unwrap();
+
+    // 4. Conflict file
+    let conflict_src = source_dir.path().join(".gitconfig");
+    fs::write(&conflict_src, "[user]\n").unwrap();
+    fs::write(target_dir.path().join(".gitconfig"), "unmanaged\n").unwrap();
+
+    // 5. Modified secret (re-using same key)
+    let key_content = fs::read_to_string(&key_file).unwrap();
+    let identity: age::x25519::Identity = key_content.trim().parse().unwrap();
+    let pubkey = identity.to_public();
+    let recipient: &dyn Recipient = &pubkey;
+    let encryptor = age::Encryptor::with_recipients(std::iter::once(recipient)).unwrap();
+    let mut encrypted_buf = vec![];
+    let mut writer = encryptor.wrap_output(&mut encrypted_buf).unwrap();
+    writer.write_all(b"SECRET=orig\n").unwrap();
+    writer.finish().unwrap();
+    fs::write(source_dir.path().join(".env_secret.age"), encrypted_buf).unwrap();
+    fs::write(target_dir.path().join(".env_secret"), "SECRET=drifted\n").unwrap();
+
+    let run_status = |extra: &[&str]| {
+        Command::new(bin)
+            .env_remove("ENSTOW_CONFIG")
+            .args([
+                "status",
+                "-s",
+                source_dir.path().to_str().unwrap(),
+                "-t",
+                target_dir.path().to_str().unwrap(),
+                "--age-key-file",
+                key_file.to_str().unwrap(),
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+
+    let expected_mixed_summary =
+        "Status summary: 2 synced, 1 missing, 1 conflict, 1 modified, 0 unverified.";
+
+    // Default status shows all rows + summary footer
+    let full = run_status(&[]);
+    assert!(full.status.success());
+    let full_stdout = String::from_utf8_lossy(&full.stdout);
+    assert!(full_stdout.contains("SYNCED"));
+    assert!(full_stdout.contains("MISSING"));
+    assert!(full_stdout.contains("CONFLICT"));
+    assert!(full_stdout.contains("MODIFIED"));
+    assert!(full_stdout.contains(expected_mixed_summary));
+
+    // --changes-only and --short hide SYNCED rows while preserving full summary counts
+    for flag in ["--changes-only", "--short"] {
+        let filtered = run_status(&[flag]);
+        assert!(filtered.status.success());
+        let stdout = String::from_utf8_lossy(&filtered.stdout);
+        assert!(
+            !stdout.contains("SYNCED"),
+            "SYNCED rows should be hidden with {flag}: {stdout}"
+        );
+        assert!(stdout.contains("MISSING"));
+        assert!(stdout.contains("CONFLICT"));
+        assert!(stdout.contains("MODIFIED"));
+        assert!(stdout.contains(expected_mixed_summary));
+    }
+
+    // --changes-only --json emits clean JSON array excluding synced items (no summary line)
+    let json_filtered = run_status(&["--changes-only", "--json"]);
+    assert!(json_filtered.status.success());
+    let json_stdout = String::from_utf8_lossy(&json_filtered.stdout);
+    assert!(!json_stdout.contains("Status summary:"));
+    let parsed: serde_json::Value = serde_json::from_str(&json_stdout).expect("valid JSON");
+    let arr = parsed.as_array().expect("JSON array");
+    assert_eq!(arr.len(), 3, "expected 3 non-synced items, got {:?}", arr);
+    assert!(arr.iter().all(|v| v["status"] != "synced"));
+
+    // --changes-only --check exits 1 when any entry is not synced
+    let check_fail = run_status(&["--changes-only", "--check"]);
+    assert!(!check_fail.status.success());
+    let check_fail_stdout = String::from_utf8_lossy(&check_fail.stdout);
+    assert!(!check_fail_stdout.contains("SYNCED"));
+    assert!(check_fail_stdout.contains(expected_mixed_summary));
+
+    // Sync everything via apply --force
+    let apply = Command::new(bin)
+        .env_remove("ENSTOW_CONFIG")
+        .args([
+            "apply",
+            "--force",
+            "-s",
+            source_dir.path().to_str().unwrap(),
+            "-t",
+            target_dir.path().to_str().unwrap(),
+            "--age-key-file",
+            key_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(apply.status.success());
+
+    // When everything is synced: --changes-only prints only summary (no leading blank line, no SYNCED rows)
+    let all_synced = run_status(&["--changes-only", "--check"]);
+    assert!(all_synced.status.success());
+    let all_synced_stdout = String::from_utf8_lossy(&all_synced.stdout);
+    assert_eq!(
+        all_synced_stdout,
+        "Status summary: 5 synced, 0 missing, 0 conflict, 0 modified, 0 unverified.\n"
+    );
+
+    // When everything is synced: --short --json prints empty JSON array
+    let all_synced_json = run_status(&["--short", "--json", "--check"]);
+    assert!(all_synced_json.status.success());
+    let parsed_empty: serde_json::Value =
+        serde_json::from_slice(&all_synced_json.stdout).expect("valid JSON");
+    assert_eq!(parsed_empty, serde_json::json!([]));
 }
