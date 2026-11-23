@@ -152,6 +152,8 @@ States reported:
 - `MODIFIED`: Target secret file exists, but content has drifted from the decrypted source.
 - `UNVERIFIED`: Target secret file exists, but decryption keys are missing or unavailable.
 
+In text mode, `enstow status` prints a summary footer (`Status summary: N synced, N missing, N conflict, N modified, N unverified.`). Passing `--changes-only` (alias `--short`) hides `SYNCED` entries in both text and `--json` output while preserving the full status counts in the text summary footer and keeping `--json` strictly valid JSON.
+
 ## :mag: Inspecting Diffs (`enstow diff`)
 
 Show unified diffs between package dotfiles (including in-memory decrypted secrets) and target destinations:
@@ -191,7 +193,7 @@ Checks performed by `enstow doctor`:
 - **Symlink Health:** Identifies broken, dangling, stale, or legacy folded directory symlinks.
 - **Secret Permissions:** Verifies decrypted secret targets enforce `0600` (or configured) permissions on Unix.
 - **Decryption Prerequisites:** Checks availability of configured `age`/SSH identity keys and the `sops` binary when `.sops.*` files are present.
-- **Secret Guard:** Flags plaintext siblings sitting alongside `.age`/`.sops.*` files in the repository (even if `.enstowignore`d) and warns if plaintext counterparts are missing from `.gitignore`. With `--staged`, inspects `git diff --cached` for pre-commit checks; with `--tracked`, audits all git-tracked files (`git ls-files`) for forbidden `.env`/private key filenames (`*.key`, `*.pem`, `id_rsa`, `id_ed25519`), plaintext counterparts, and credential leaks, exiting non-zero on findings.
+- **Secret Guard:** Flags plaintext siblings sitting alongside `.age`/`.sops.*` files in the repository (even if `.enstowignore`d) and warns if plaintext counterparts are missing from `.gitignore`. With `--staged`, inspects `git diff --cached` for pre-commit checks; with `--tracked` (mutually exclusive with `--staged`), audits all git-tracked files (`git ls-files`) for forbidden `.env`/private key filenames (`*.key`, `*.pem`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `id_ed25519_sk`, `id_ecdsa_sk`), plaintext counterparts, and credential leaks as errors (exiting non-zero on findings).
 - **Secret Leak Scan:** Flags unencrypted sensitive files inside managed packages.
 
 ## :shield: Conflict Resolution & Backups

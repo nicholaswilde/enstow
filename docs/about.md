@@ -11,7 +11,7 @@
 - **Machine Bootstrapping:** Clone a remote dotfiles repository, detect host/profile filters, check or import decryption keys, and deploy in one step with `enstow init`.
 - **Unstow, Restow & Scrub:** Cleanly unlink managed dotfiles, restow packages while pruning stale symlinks, or zeroize and remove decrypted secret files via `enstow scrub` / `unstow --shred`.
 - **Collision, Backup & Interactive Resolution:** Preview actions (`--dry-run`), resolve collisions interactively (`--interactive`), relocate conflicts to timestamped backups (`--backup`, `--backup-dir`), adopt host files (`--adopt`), or overwrite (`--force`).
-- **Status, Diff & Health Diagnostics:** Inspect sync and secret drift states (`enstow status`, `--check` for CI), view unified diffs with optional secret masking (`enstow diff --mask-secrets`), and audit secret hygiene, permissions, symlink health, and staged git leaks (`enstow doctor`, `--staged`).
+- **Status, Diff & Health Diagnostics:** Inspect sync and secret drift states with summary counts (`enstow status`, `--changes-only` / `--short`, `--check` for CI), view unified diffs with optional secret masking (`enstow diff --mask-secrets`), and audit secret hygiene, permissions, symlink health, staged git leaks (`enstow doctor --staged`), and repo-wide git-tracked files (`enstow doctor --tracked`).
 - **Secret Lifecycle Management:** Generate X25519 `age` keys (`enstow keygen`), encrypt (`enstow encrypt`), decrypt (`enstow decrypt`), interactively edit and optionally re-deploy in `$EDITOR` (`enstow edit --apply`), and rotate recipients across packages (`enstow rekey`).
 - **Lifecycle Hooks & Condition Filters:** Run global or per-package `pre_apply`, `post_apply`, `pre_unstow`, and `post_unstow` hooks, select package profiles, and filter packages by `os`, `arch`, and `hostname`.
 - **Git-Style Ignore Rules:** Filter files using `.enstowignore`, `.stow-local-ignore`, `--ignore` / `-i` CLI flags, `ENSTOW_IGNORE`, or configuration files.
@@ -24,7 +24,7 @@
 - **Zero Plaintext in Version Control:** Plaintext secrets never touch your dotfiles working tree. Decryption buffers stay in memory until written directly to the target path outside the repository.
 - **Strict Permission Hygiene:** Generated `age` keys (`enstow keygen`) and decrypted secret targets default to mode `0600` (`-rw-------`) on Unix, with optional per-glob or per-package overrides for targets in [Configuration](./configuration.md#custom-target-permissions).
 - **Secure Scrubbing:** Removing decrypted targets with [`enstow scrub`](./secrets.md#secure-secret-scrubbing-permission-hygiene) or `enstow unstow --shred` overwrites file bytes with zeros and flushes to disk before unlinking.
-- **Pre-Flight Auditing:** Run [`enstow doctor`](./usage.md#system-diagnostics-enstow-doctor) to detect package collisions, broken symlinks, overly permissive secret targets, missing decryption prerequisites, and accidental plaintext secret leaks.
+- **Pre-Flight & CI Auditing:** Run [`enstow doctor`](./usage.md#system-diagnostics-enstow-doctor) to detect package collisions, broken symlinks, overly permissive secret targets, missing decryption prerequisites, and accidental plaintext secret leaks — plus `enstow doctor --staged` for pre-commit hooks and `enstow doctor --tracked` for CI repo-wide secret invariant checks.
 
 [1]: https://www.gnu.org/software/stow/
 [2]: https://getsops.io/

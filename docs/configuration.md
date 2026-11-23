@@ -343,7 +343,7 @@ arch = "x86_64"
 hostname = ["workstation", "laptop"]
 ```
 
-Non-matching packages are automatically skipped during `apply`, `restow`, `unstow`, and `status`.
+Non-matching packages are automatically skipped during `apply`, `restow`, `unstow`, `status`, `diff`, `doctor`, and `rekey`.
 
 ## :lock: Custom Target Permissions
 
@@ -381,6 +381,7 @@ Decrypted secrets and rendered `.tmpl` files default to mode `0600` (`-rw-------
 | `ENSTOW_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | `recipients` | `-r`, `--recipient` | Age or SSH recipient public keys for encryption | None |
 | `ENSTOW_PACKAGES` | `packages` | `PACKAGES` | Default packages to stow when none specified | None |
 | `ENSTOW_PROFILE` | `default_profile` / `profiles` | `--profile` | Profile to select packages from configuration | None |
+| `ENSTOW_HOSTNAME` | N/A | N/A | Override detected host name for condition filters, host profiles, and `{{ hostname }}` templates | System hostname |
 | `ENSTOW_IGNORE` | `ignore` | `-i`, `--ignore` | Additional glob patterns to ignore (comma or colon separated) | None |
 | `ENSTOW_EDITOR` / `VISUAL` / `EDITOR` | `editor` | `--editor` | Editor command for interactive secret editing (`enstow edit`) | `vi` (Unix) / `notepad` (Windows) |
 | `ENSTOW_JSON` | `json` | `--json` | Emit `status`, `diff`, and `doctor` output in JSON format (`true`/`false`) | `false` |

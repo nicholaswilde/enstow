@@ -82,10 +82,10 @@ enstow self-update
 enstow self-update --yes
 
 # Install a specific release version
-enstow self-update --version 0.1.15
+enstow self-update --version 0.1.16
 
 # Pass a GitHub token to raise the API rate limit (60/hr -> 5,000/hr)
-GH_TOKEN=ghp_... enstow self-update
+GH_TOKEN=<github-token> enstow self-update
 ```
 
 !!! tip

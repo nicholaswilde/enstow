@@ -56,11 +56,13 @@ enstow keygen
 # Ingest an existing secret file into a package encrypted with age
 enstow add ~/.secrets/api.env -p secrets --encrypt
 
-# Inspect sync, conflict, and secret drift status
+# Inspect sync, conflict, and secret drift status (or hide SYNCED rows)
 enstow status
+enstow status --changes-only
 
-# Audit secret hygiene, permissions, and symlink health
+# Audit secret hygiene, permissions, symlink health, or all git-tracked files in CI
 enstow doctor
+enstow doctor --tracked
 
 # Check for or install the latest GitHub release
 enstow self-update --check
