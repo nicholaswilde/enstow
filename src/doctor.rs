@@ -89,9 +89,46 @@ pub fn run_doctor(
     Ok(DoctorReport::new(checks))
 }
 
+#[derive(Clone, Copy)]
+enum GitAuditMode {
+    Staged,
+    Tracked,
+}
+
 /// Inspect git staged files (`git diff --cached --name-only --diff-filter=ACM`) for
-/// plaintext counterparts of encrypted files, `.env` files, and credential leaks.
+/// plaintext counterparts of encrypted files, forbidden secret filenames, and credential leaks.
 pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError> {
+    run_doctor_git_files(source_dir, GitAuditMode::Staged)
+}
+
+/// Audit all git-tracked files (`git ls-files -z`) across the repository for
+/// plaintext counterparts of encrypted files, forbidden secret filenames, and credential leaks.
+pub fn run_doctor_tracked(source_dir: &Path) -> Result<DoctorReport, EnstowError> {
+    run_doctor_git_files(source_dir, GitAuditMode::Tracked)
+}
+
+fn read_git_index_blob(git_root: &Path, rel: &str) -> Option<Vec<u8>> {
+    std::process::Command::new("git")
+        .args(["show", &format!(":{rel}")])
+        .current_dir(git_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| o.stdout)
+}
+
+fn read_bounded_regular_file(path: &Path) -> Option<Vec<u8>> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > 1_000_000 {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn run_doctor_git_files(
+    source_dir: &Path,
+    mode: GitAuditMode,
+) -> Result<DoctorReport, EnstowError> {
     let top_out = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(source_dir)
@@ -114,26 +151,35 @@ pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError>
     let git_root = PathBuf::from(&git_root_str);
     let canon_root = normalize_path(&git_root.canonicalize().unwrap_or_else(|_| git_root.clone()));
 
-    let diff_out = std::process::Command::new("git")
-        .args(["diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"])
+    let (git_args, scope_word, label): (&[&str], &str, &str) = match mode {
+        GitAuditMode::Staged => (
+            &["diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"],
+            "staged",
+            "Staged",
+        ),
+        GitAuditMode::Tracked => (&["ls-files", "-z"], "tracked", "Tracked"),
+    };
+
+    let list_out = std::process::Command::new("git")
+        .args(git_args)
         .current_dir(&git_root)
         .output()
         .map_err(|e| {
             EnstowError::Config(format!(
-                "Failed to list staged files in '{}': {e}",
+                "Failed to list {scope_word} files in '{}': {e}",
                 git_root.display()
             ))
         })?;
-    if !diff_out.status.success() {
-        let stderr = String::from_utf8_lossy(&diff_out.stderr);
+    if !list_out.status.success() {
+        let stderr = String::from_utf8_lossy(&list_out.stderr);
         return Err(EnstowError::Config(format!(
-            "Failed to inspect git index in '{}': {}",
+            "Failed to inspect git {scope_word} files in '{}': {}",
             git_root.display(),
             stderr.trim()
         )));
     }
 
-    let staged_rel_paths: Vec<String> = diff_out
+    let rel_paths: Vec<String> = list_out
         .stdout
         .split(|&b| b == 0)
         .filter(|s| !s.is_empty())
@@ -147,13 +193,13 @@ pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError>
             .collect();
 
     let mut checks = Vec::new();
-    for rel in &staged_rel_paths {
+    for rel in &rel_paths {
         let full_path = rel
             .split('/')
             .fold(canon_root.clone(), |acc, part| acc.join(part));
         let norm_full = normalize_path(&full_path);
 
-        // Encrypted files themselves (.age, .sops.*) are safe to stage
+        // Encrypted files themselves (.age, .sops.*) are safe to stage/track
         if matches!(
             crypto::detect_secret_type(&full_path),
             Some(SecretType::Age | SecretType::Sops)
@@ -166,7 +212,7 @@ pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError>
                 category: "secret_guard".into(),
                 severity: CheckSeverity::Error,
                 message: format!(
-                    "Staged plaintext secret '{}' has encrypted counterpart '{}' — encrypt instead of committing plaintext",
+                    "{label} plaintext secret '{}' has encrypted counterpart '{}' — encrypt instead of committing plaintext",
                     rel,
                     encrypted_src.display()
                 ),
@@ -179,24 +225,40 @@ pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError>
                 category: "secret_guard".into(),
                 severity: CheckSeverity::Error,
                 message: format!(
-                    "Staged unencrypted .env file '{}' — add to .gitignore or encrypt with 'enstow encrypt'",
+                    "{label} unencrypted .env file '{}' — add to .gitignore or encrypt with 'enstow encrypt'",
                     rel
                 ),
                 path: Some(full_path.clone()),
             });
         }
 
-        // Scan staged blob content (fallback to working tree file if git show fails)
-        let staged_bytes = std::process::Command::new("git")
-            .args(["show", &format!(":{rel}")])
-            .current_dir(&git_root)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| o.stdout)
-            .or_else(|| fs::read(&full_path).ok());
+        if is_forbidden_key_file(&full_path) {
+            checks.push(DoctorCheck {
+                category: "secret_guard".into(),
+                severity: CheckSeverity::Error,
+                message: format!(
+                    "{label} private key file '{}' — add to .gitignore or encrypt with 'enstow encrypt'",
+                    rel
+                ),
+                path: Some(full_path.clone()),
+            });
+        }
 
-        if let Some(bytes) = staged_bytes {
+        let file_bytes = match mode {
+            // Scan staged index blob (fallback to working tree regular file if git show fails)
+            GitAuditMode::Staged => read_git_index_blob(&git_root, rel)
+                .or_else(|| read_bounded_regular_file(&full_path)),
+            // Read regular working-tree file without following symlinks (fallback to index blob if absent)
+            GitAuditMode::Tracked => match fs::symlink_metadata(&full_path) {
+                Ok(meta) if meta.file_type().is_file() && meta.len() <= 1_000_000 => {
+                    fs::read(&full_path).ok()
+                }
+                Ok(_) => None,
+                Err(_) => read_git_index_blob(&git_root, rel),
+            },
+        };
+
+        if let Some(bytes) = file_bytes {
             if bytes.len() <= 1_000_000 {
                 if let Ok(content) = std::str::from_utf8(&bytes) {
                     if let Some(desc) = scan_content_for_leaks(content) {
@@ -204,7 +266,7 @@ pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError>
                             category: "leak_scan".into(),
                             severity: CheckSeverity::Error,
                             message: format!(
-                                "Staged credential leak detected in '{}': {}",
+                                "{label} credential leak detected in '{}': {}",
                                 rel, desc
                             ),
                             path: Some(full_path),
@@ -220,8 +282,8 @@ pub fn run_doctor_staged(source_dir: &Path) -> Result<DoctorReport, EnstowError>
             category: "secret_guard".into(),
             severity: CheckSeverity::Ok,
             message: format!(
-                "No plaintext secrets or credential leaks found in {} staged file(s)",
-                staged_rel_paths.len()
+                "No plaintext secrets or credential leaks found in {} {scope_word} file(s)",
+                rel_paths.len()
             ),
             path: None,
         });
@@ -741,6 +803,23 @@ fn is_forbidden_dotenv(path: &Path) -> bool {
     false
 }
 
+fn is_forbidden_key_file(path: &Path) -> bool {
+    if crypto::detect_secret_type(path).is_some() {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".key") || lower.ends_with(".pem") {
+        return true;
+    }
+    matches!(
+        lower.as_str(),
+        "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa" | "id_ed25519_sk" | "id_ecdsa_sk"
+    )
+}
+
 /// Collect `(encrypted_path, plaintext_sibling_path)` pairs for `.age` and `.sops.*` files
 /// under `roots`, excluding exact `.sops.yaml` config files whose plaintext name equals themselves.
 fn collect_encrypted_counterparts(roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
@@ -968,4 +1047,46 @@ fn scan_content_for_leaks(content: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_forbidden_key_file_cases() {
+        for forbidden in [
+            "server.key",
+            "certs/TLS.KEY",
+            "private.pem",
+            "certs/CERT.PEM",
+            ".ssh/id_rsa",
+            ".ssh/id_ed25519",
+            ".ssh/id_ecdsa",
+            ".ssh/id_dsa",
+            ".ssh/id_ed25519_sk",
+            ".ssh/id_ecdsa_sk",
+        ] {
+            assert!(
+                is_forbidden_key_file(Path::new(forbidden)),
+                "expected '{forbidden}' to be forbidden"
+            );
+        }
+
+        for allowed in [
+            ".ssh/id_rsa.pub",
+            ".ssh/id_ed25519.pub",
+            ".ssh/id_ed25519.age",
+            "certs/server.key.age",
+            "certs/server.key.example",
+            "certs/private.pem.sops.yaml",
+            "docs/id_rsa_guide.md",
+            "README.md",
+        ] {
+            assert!(
+                !is_forbidden_key_file(Path::new(allowed)),
+                "expected '{allowed}' to be allowed"
+            );
+        }
+    }
 }

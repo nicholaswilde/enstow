@@ -285,12 +285,15 @@ fn main() -> anyhow::Result<()> {
             common,
             json,
             staged,
+            tracked,
         }) => {
             let resolved = enstow::config::resolve_common_args(&common, config.as_ref())?;
             let common_args = resolved.to_common_args();
             let json = enstow::config::resolve_json(json, config.as_ref());
             let report = if staged {
                 enstow::doctor::run_doctor_staged(common_args.source_path())?
+            } else if tracked {
+                enstow::doctor::run_doctor_tracked(common_args.source_path())?
             } else {
                 enstow::doctor::run_doctor(&common_args, Some(&resolved.permissions))?
             };

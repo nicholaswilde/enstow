@@ -182,7 +182,7 @@ Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in
 
 - **Continuous Verification:** Run [`enstow doctor`](./usage.md#system-diagnostics-enstow-doctor) to verify that all deployed secret files retain `0600` permissions, that no plaintext siblings sit alongside `.age`/`.sops.*` files in the repository, and that plaintext counterparts are covered by `.gitignore`.
 
-- **Git Pre-Commit Secret Guard (`doctor --staged`):** Install a zero-maintenance `.git/hooks/pre-commit` hook that blocks staged plaintext counterparts of encrypted files, unencrypted `.env` files, and credential patterns:
+- **Git Pre-Commit Secret Guard (`doctor --staged`):** Install a zero-maintenance `.git/hooks/pre-commit` hook that blocks staged plaintext counterparts of encrypted files, unencrypted `.env` or private key files (`*.key`, `*.pem`, `id_rsa`, `id_ed25519`), and credential patterns:
 
     ```bash
     cat << 'EOF' > .git/hooks/pre-commit
@@ -190,4 +190,12 @@ Files ending in `.tmpl` (e.g. `.gitconfig.tmpl` -> `.gitconfig`) are rendered in
     exec enstow doctor --staged
     EOF
     chmod +x .git/hooks/pre-commit
+    ```
+
+- **CI Repo-Wide Secret Guard (`doctor --tracked`):** Audit every git-tracked file (`git ls-files`) across the repository — including root files and `.enstowignore`d paths — for forbidden `.env`/private key filenames, unencrypted counterparts of `.age`/`.sops.*` files, and credential leaks, exiting non-zero on findings:
+
+    ```bash
+    # Run in CI workflows (human-readable or JSON output)
+    enstow doctor --tracked
+    enstow doctor --tracked --json
     ```

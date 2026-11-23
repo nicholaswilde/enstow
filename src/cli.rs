@@ -407,9 +407,13 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Inspect git staged files for plaintext secrets, .env files, and credential leaks (for pre-commit hooks)
-        #[arg(long)]
+        /// Inspect git staged files for plaintext secrets, .env/key files, and credential leaks (for pre-commit hooks)
+        #[arg(long, conflicts_with = "tracked")]
         staged: bool,
+
+        /// Audit all git-tracked files across the repository for forbidden secret filenames, plaintext counterparts, and credential leaks (for CI)
+        #[arg(long, conflicts_with = "staged")]
+        tracked: bool,
     },
     /// Generate UNIX roff man page
     Man,

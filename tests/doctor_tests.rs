@@ -2,7 +2,9 @@ use age::secrecy::ExposeSecret;
 use age::Recipient;
 use clap::Parser;
 use enstow::cli::{Cli, Commands, CommonArgs};
-use enstow::doctor::{run_doctor, run_doctor_staged, CheckSeverity, DoctorReport};
+use enstow::doctor::{
+    run_doctor, run_doctor_staged, run_doctor_tracked, CheckSeverity, DoctorReport,
+};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -495,12 +497,42 @@ fn test_doctor_reports_legacy_folded_directory_symlink() {
 fn test_cli_parsing_doctor_staged() {
     let cli = Cli::try_parse_from(["enstow", "doctor", "--staged", "--json"]).unwrap();
     match cli.command {
-        Some(Commands::Doctor { json, staged, .. }) => {
+        Some(Commands::Doctor {
+            json,
+            staged,
+            tracked,
+            ..
+        }) => {
             assert!(json);
             assert!(staged);
+            assert!(!tracked);
         }
         other => panic!("Expected Doctor command, got {:?}", other),
     }
+}
+
+#[test]
+fn test_cli_parsing_doctor_tracked_and_staged_conflict() {
+    let cli = Cli::try_parse_from(["enstow", "doctor", "--tracked", "--json"]).unwrap();
+    match cli.command {
+        Some(Commands::Doctor {
+            json,
+            staged,
+            tracked,
+            ..
+        }) => {
+            assert!(json);
+            assert!(!staged);
+            assert!(tracked);
+        }
+        other => panic!("Expected Doctor command, got {:?}", other),
+    }
+
+    let conflict = Cli::try_parse_from(["enstow", "doctor", "--staged", "--tracked"]);
+    assert!(
+        conflict.is_err(),
+        "expected --staged and --tracked to conflict"
+    );
 }
 
 #[test]
@@ -888,4 +920,268 @@ fn test_doctor_symlink_health_detects_depth_6_dangling_and_stale_symlinks() {
         "Ignored or unrelated dangling symlinks should not be reported, checks: {:?}",
         report.checks
     );
+}
+
+#[test]
+fn test_doctor_tracked_non_git_dir_returns_error() {
+    let non_git = tempdir().unwrap();
+    let err = run_doctor_tracked(non_git.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("not inside a git repository"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_doctor_tracked_audits_committed_files_keys_counterparts_and_leaks() {
+    let repo_dir = tempdir().unwrap();
+    let key_dir = tempdir().unwrap();
+
+    let git_init = Command::new("git")
+        .arg("init")
+        .current_dir(repo_dir.path())
+        .output();
+    if !matches!(git_init, Ok(ref o) if o.status.success()) {
+        eprintln!("Skipping git tracked test: git CLI unavailable");
+        return;
+    }
+
+    let git_cmd = |args: &[&str]| {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Enstow Test",
+                "-c",
+                "user.email=test@enstow.local",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    let bash_dir = repo_dir.path().join("bash");
+    let ssh_dir = repo_dir.path().join("ssh");
+    let certs_dir = repo_dir.path().join("certs");
+    let ignored_dir = repo_dir.path().join("ignored_dir");
+    fs::create_dir_all(&bash_dir).unwrap();
+    fs::create_dir_all(&ssh_dir).unwrap();
+    fs::create_dir_all(&certs_dir).unwrap();
+    fs::create_dir_all(&ignored_dir).unwrap();
+
+    let key_file = key_dir.path().join("keys.txt");
+    create_test_age_key_and_encrypted_file(
+        &key_file,
+        &bash_dir.join(".tokens.age"),
+        b"export TOKEN=ok\n",
+    );
+    create_test_age_key_and_encrypted_file(
+        &key_file,
+        &certs_dir.join("tls.key.age"),
+        b"dummy encrypted tls key\n",
+    );
+    fs::write(bash_dir.join(".bashrc"), "export PATH=$HOME/bin:$PATH\n").unwrap();
+    fs::write(repo_dir.path().join(".env.example"), "API_KEY=\n").unwrap();
+    fs::write(repo_dir.path().join(".enstowignore"), "ignored_dir/\n").unwrap();
+    fs::write(
+        ssh_dir.join("id_rsa.pub"),
+        "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC user@host\n",
+    )
+    .unwrap();
+    fs::write(
+        ssh_dir.join("id_ed25519.pub"),
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
+    )
+    .unwrap();
+    fs::write(ignored_dir.join("readme.txt"), "safe tracked note\n").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        "/nonexistent/enstow-tracked-symlink-target",
+        ignored_dir.join("dangling.link"),
+    )
+    .unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(
+        "C:\\nonexistent\\enstow-tracked-symlink-target",
+        ignored_dir.join("dangling.link"),
+    )
+    .unwrap();
+
+    // 1. Clean committed repo (including public keys, encrypted keys, .env.example) passes
+    git_cmd(&["add", "-A"]);
+    git_cmd(&["commit", "-m", "initial clean dotfiles"]);
+    let clean = run_doctor_tracked(repo_dir.path()).unwrap();
+    assert!(clean.healthy, "expected clean tracked report: {:?}", clean);
+    assert!(
+        clean.checks.iter().any(|c| {
+            c.category == "secret_guard"
+                && c.severity == CheckSeverity::Ok
+                && c.message.contains("tracked file(s)")
+        }),
+        "checks: {:?}",
+        clean.checks
+    );
+
+    // 2. Committed root .env and .enstowignore'd nested .env are flagged (even with empty staging area)
+    fs::write(repo_dir.path().join(".env"), "FOO=bar\n").unwrap();
+    fs::write(ignored_dir.join("app.env"), "BAR=baz\n").unwrap();
+    git_cmd(&["add", "-f", ".env", "ignored_dir/app.env"]);
+    git_cmd(&["commit", "-m", "add dotenv files"]);
+
+    // Staged check sees 0 staged files; tracked check catches both committed files
+    let staged_empty = run_doctor_staged(repo_dir.path()).unwrap();
+    assert!(staged_empty.healthy);
+    let dotenv_report = run_doctor_tracked(repo_dir.path()).unwrap();
+    assert!(!dotenv_report.healthy);
+    assert!(
+        dotenv_report.errors >= 2,
+        "expected >=2 dotenv errors: {:?}",
+        dotenv_report
+    );
+    git_cmd(&["rm", "-f", ".env", "ignored_dir/app.env"]);
+    git_cmd(&["commit", "-m", "remove dotenv files"]);
+
+    // 3. Committed private key filenames (*.key, *.pem, id_rsa, id_ed25519) are flagged
+    //    even without PEM headers; .pub and .age counterparts remain allowed
+    fs::write(certs_dir.join("server.key"), "not-a-pem-header\n").unwrap();
+    fs::write(certs_dir.join("private.pem"), "not-a-pem-header\n").unwrap();
+    fs::write(ssh_dir.join("id_rsa"), "not-a-pem-header\n").unwrap();
+    fs::write(ssh_dir.join("id_ed25519"), "not-a-pem-header\n").unwrap();
+    git_cmd(&[
+        "add",
+        "-f",
+        "certs/server.key",
+        "certs/private.pem",
+        "ssh/id_rsa",
+        "ssh/id_ed25519",
+    ]);
+
+    // Shared guard also blocks staged private key filenames
+    let staged_keys = run_doctor_staged(repo_dir.path()).unwrap();
+    assert!(!staged_keys.healthy, "expected staged key files to fail");
+    assert!(
+        staged_keys.errors >= 4,
+        "expected >=4 staged key errors: {:?}",
+        staged_keys
+    );
+
+    git_cmd(&["commit", "-m", "add private key filenames"]);
+    let key_report = run_doctor_tracked(repo_dir.path()).unwrap();
+    assert!(!key_report.healthy);
+    assert_eq!(
+        key_report.errors, 4,
+        "expected exactly 4 private key filename errors (ignoring .pub/.age): {:?}",
+        key_report
+    );
+    for forbidden in ["server.key", "private.pem", "id_rsa", "id_ed25519"] {
+        assert!(
+            key_report.checks.iter().any(|c| {
+                c.category == "secret_guard"
+                    && c.severity == CheckSeverity::Error
+                    && c.message.contains(forbidden)
+            }),
+            "missing error for {forbidden}: {:?}",
+            key_report.checks
+        );
+    }
+    assert!(
+        !key_report
+            .checks
+            .iter()
+            .any(|c| c.message.contains(".pub") || c.message.contains(".age")),
+        "public/encrypted keys must not be flagged: {:?}",
+        key_report.checks
+    );
+    git_cmd(&[
+        "rm",
+        "-f",
+        "certs/server.key",
+        "certs/private.pem",
+        "ssh/id_rsa",
+        "ssh/id_ed25519",
+    ]);
+    git_cmd(&["commit", "-m", "remove private key filenames"]);
+
+    // 4. Committed plaintext counterpart alongside bash/.tokens.age is flagged
+    fs::write(bash_dir.join(".tokens"), "export SECRET=plain\n").unwrap();
+    git_cmd(&["add", "-f", "bash/.tokens"]);
+    git_cmd(&["commit", "-m", "add plaintext counterpart"]);
+    let counterpart_report = run_doctor_tracked(repo_dir.path()).unwrap();
+    assert!(!counterpart_report.healthy);
+    assert!(
+        counterpart_report.checks.iter().any(|c| {
+            c.category == "secret_guard"
+                && c.severity == CheckSeverity::Error
+                && c.message.contains(".tokens")
+        }),
+        "checks: {:?}",
+        counterpart_report.checks
+    );
+    git_cmd(&["rm", "-f", "bash/.tokens"]);
+    git_cmd(&["commit", "-m", "remove plaintext counterpart"]);
+
+    // 5. Committed credential leak inside an .enstowignore'd tracked file is flagged
+    fs::write(
+        ignored_dir.join("notes.txt"),
+        "token=ghp_1234567890abcdefghijklmnop\n",
+    )
+    .unwrap();
+    git_cmd(&["add", "-f", "ignored_dir/notes.txt"]);
+    git_cmd(&["commit", "-m", "add credential leak"]);
+    let leak_report = run_doctor_tracked(repo_dir.path()).unwrap();
+    assert!(!leak_report.healthy);
+    assert!(
+        leak_report.checks.iter().any(|c| {
+            c.category == "leak_scan"
+                && c.severity == CheckSeverity::Error
+                && c.message.contains("GitHub personal access token")
+        }),
+        "checks: {:?}",
+        leak_report.checks
+    );
+
+    // 6. CLI `enstow doctor --tracked` and `--json` exit non-zero on findings and 0 when clean
+    let bin = env!("CARGO_BIN_EXE_enstow");
+    if matches!(Command::new(bin).arg("--version").output(), Ok(o) if o.status.success()) {
+        let fail_out = Command::new(bin)
+            .current_dir(repo_dir.path())
+            .args(["doctor", "--tracked", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            !fail_out.status.success(),
+            "expected doctor --tracked to exit non-zero on leak"
+        );
+        let parsed_fail: serde_json::Value =
+            serde_json::from_slice(&fail_out.stdout).expect("valid JSON report");
+        assert_eq!(parsed_fail["healthy"], serde_json::json!(false));
+        assert!(parsed_fail["errors"].as_u64().unwrap_or(0) >= 1);
+
+        git_cmd(&["rm", "-f", "ignored_dir/notes.txt"]);
+        git_cmd(&["commit", "-m", "remove credential leak"]);
+
+        let ok_out = Command::new(bin)
+            .current_dir(repo_dir.path())
+            .args(["doctor", "--tracked", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            ok_out.status.success(),
+            "expected clean doctor --tracked to exit 0: {}",
+            String::from_utf8_lossy(&ok_out.stderr)
+        );
+        let parsed_ok: serde_json::Value =
+            serde_json::from_slice(&ok_out.stdout).expect("valid JSON report");
+        assert_eq!(parsed_ok["healthy"], serde_json::json!(true));
+        assert_eq!(parsed_ok["errors"], serde_json::json!(0));
+    }
 }

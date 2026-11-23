@@ -18,7 +18,7 @@ When executed without a subcommand (`enstow`), it runs the default `apply` comma
 | `scrub` | — | Securely shred and remove decrypted secrets and symlinks | `enstow scrub [PACKAGES...]` |
 | `status` | — | Inspect sync, missing, conflict, modified (drift), and unverified state | `enstow status [--check] [--json]` |
 | `diff` | — | Show unified diff between dotfiles and target destination | `enstow diff [--mask-secrets] [--json]` |
-| `doctor` | `lint` | Audit system health, secret hygiene, permissions, symlinks, and git staged files | `enstow doctor [--staged] [--json]` |
+| `doctor` | `lint` | Audit system health, secret hygiene, permissions, symlinks, and git staged/tracked files | `enstow doctor [--staged \| --tracked] [--json]` |
 | `keygen` | — | Generate an X25519 `age` identity key file with `0600` permissions and print its public key | `enstow keygen [-o <path>] [--force]` |
 | `encrypt` | — | Encrypt a secret dotfile into `.age` format | `enstow encrypt <file> [-r <key>]` |
 | `decrypt` | — | Decrypt an `age` or `sops` encrypted secret file to stdout or file | `enstow decrypt <file> [-o <out>]` |
@@ -172,8 +172,11 @@ Audit repository and deployment health (also aliased as `enstow lint`):
 # Run full diagnostics
 enstow doctor
 
-# Inspect git staged files for plaintext secrets, .env files, and leaks (pre-commit hook)
+# Inspect git staged files for plaintext secrets, .env/key files, and leaks (pre-commit hook)
 enstow doctor --staged
+
+# Audit all git-tracked files across the repository for forbidden secret files and leaks (CI)
+enstow doctor --tracked
 
 # Machine-readable JSON diagnostics report
 enstow doctor --json
@@ -185,7 +188,7 @@ Checks performed by `enstow doctor`:
 - **Symlink Health:** Identifies broken, dangling, stale, or legacy folded directory symlinks.
 - **Secret Permissions:** Verifies decrypted secret targets enforce `0600` (or configured) permissions on Unix.
 - **Decryption Prerequisites:** Checks availability of configured `age`/SSH identity keys and the `sops` binary when `.sops.*` files are present.
-- **Secret Guard:** Flags plaintext siblings sitting alongside `.age`/`.sops.*` files in the repository (even if `.enstowignore`d) and warns if plaintext counterparts are missing from `.gitignore`. With `--staged`, inspects `git diff --cached` for plaintext counterparts, `.env` files, and credential leaks.
+- **Secret Guard:** Flags plaintext siblings sitting alongside `.age`/`.sops.*` files in the repository (even if `.enstowignore`d) and warns if plaintext counterparts are missing from `.gitignore`. With `--staged`, inspects `git diff --cached` for pre-commit checks; with `--tracked`, audits all git-tracked files (`git ls-files`) for forbidden `.env`/private key filenames (`*.key`, `*.pem`, `id_rsa`, `id_ed25519`), plaintext counterparts, and credential leaks, exiting non-zero on findings.
 - **Secret Leak Scan:** Flags unencrypted sensitive files inside managed packages.
 
 ## :shield: Conflict Resolution & Backups
