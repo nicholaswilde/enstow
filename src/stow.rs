@@ -152,16 +152,15 @@ pub fn check_status(
 
 pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let source_path = args.source_path();
-    let target_path = args.target_path();
     let source_root = normalize_path(&source_path.canonicalize().map_err(|e| EnstowError::Io {
         path: source_path.to_path_buf(),
         source: e,
     })?);
 
-    let pkg_roots = if args.packages.is_empty() {
-        vec![source_root.clone()]
+    let pkg_entries: Vec<(PathBuf, PathBuf)> = if args.packages.is_empty() {
+        vec![(source_root.clone(), args.target_path())]
     } else {
-        let mut roots = Vec::new();
+        let mut entries = Vec::new();
         for pkg in &args.packages {
             let pkg_path = source_root.join(pkg);
             let canonical =
@@ -176,14 +175,14 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
                     pkg_path.display()
                 )));
             }
-            roots.push(canonical);
+            entries.push((canonical, args.target_for_package(pkg)));
         }
-        roots
+        entries
     };
 
     let mut actions = Vec::new();
 
-    for pkg_root in pkg_roots {
+    for (pkg_root, pkg_target) in pkg_entries {
         let gitignore = build_gitignore(&pkg_root, &source_root, &args.ignore);
 
         for entry in WalkDir::new(&pkg_root)
@@ -229,12 +228,12 @@ pub fn plan_stow(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
 
                 actions.push(FileAction::Decrypt {
                     source: path.to_path_buf(),
-                    target: target_path.join(target_rel),
+                    target: pkg_target.join(target_rel),
                 });
             } else {
                 actions.push(FileAction::Symlink {
                     source: path.to_path_buf(),
-                    target: target_path.join(rel_path),
+                    target: pkg_target.join(rel_path),
                 });
             }
         }
@@ -325,21 +324,102 @@ pub fn find_age_secrets(
 const FALLBACK_STALE_SCAN_DEPTH: usize = 8;
 const STALE_SCAN_DEPTH_HEADROOM: usize = 4;
 
-fn resolve_pkg_roots(args: &CommonArgs) -> Result<(PathBuf, Vec<PathBuf>), EnstowError> {
+/// Return the most specific (deepest) root in `target_roots` that is an ancestor of `target`,
+/// falling back to the first root if none match.
+pub(crate) fn best_target_root_for<'a>(
+    target: &Path,
+    target_roots: &'a [PathBuf],
+) -> Option<&'a Path> {
+    let norm_target = normalize_path(target);
+    let canon_target = target.canonicalize().ok().map(|c| normalize_path(&c));
+    target_roots
+        .iter()
+        .filter_map(|root| {
+            let norm_root = normalize_path(root);
+            let matches_norm = target.starts_with(root) || norm_target.starts_with(&norm_root);
+            let matches_canon = !matches_norm
+                && canon_target.as_ref().is_some_and(|ct| {
+                    root.canonicalize()
+                        .ok()
+                        .is_some_and(|cr| ct.starts_with(normalize_path(&cr)))
+                });
+            if matches_norm || matches_canon {
+                Some((norm_root.components().count(), root.as_path()))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, root)| root)
+        .or_else(|| target_roots.first().map(PathBuf::as_path))
+}
+
+/// Return the broadest (shallowest) root in `target_roots` that is an ancestor of `target`.
+pub(crate) fn broadest_target_root_for<'a>(
+    target: &Path,
+    target_roots: &'a [PathBuf],
+) -> Option<&'a Path> {
+    let norm_target = normalize_path(target);
+    target_roots
+        .iter()
+        .filter_map(|root| {
+            let norm_root = normalize_path(root);
+            if target.starts_with(root) || norm_target.starts_with(&norm_root) {
+                Some((norm_root.components().count(), root.as_path()))
+            } else {
+                None
+            }
+        })
+        .min_by_key(|(depth, _)| *depth)
+        .map(|(_, root)| root)
+        .or_else(|| target_roots.first().map(PathBuf::as_path))
+}
+
+/// Return deduplicated permission-matching roots (most specific first, then broadest) for `target`.
+pub(crate) fn permission_roots_for<'a>(
+    target: &Path,
+    target_roots: &'a [PathBuf],
+) -> Vec<&'a Path> {
+    let mut roots = Vec::new();
+    if let Some(r) = best_target_root_for(target, target_roots) {
+        roots.push(r);
+    }
+    if let Some(r) = broadest_target_root_for(target, target_roots) {
+        if !roots.contains(&r) {
+            roots.push(r);
+        }
+    }
+    roots
+}
+
+pub(crate) type TargetPackageGroups = Vec<(PathBuf, Vec<PathBuf>)>;
+
+/// Scoped target root metadata for scanning symlinks belonging to packages targeting one root.
+pub(crate) struct TargetScanScope<'a> {
+    pub source_root: &'a Path,
+    pub target_path: &'a Path,
+    pub target_canonical: &'a Path,
+    pub scoped_pkg_roots: &'a [PathBuf],
+}
+
+/// Group canonical package source directories by their resolved target root directory.
+pub(crate) fn resolve_pkg_groups_by_target(
+    args: &CommonArgs,
+) -> Result<(PathBuf, TargetPackageGroups), EnstowError> {
     let source_path = args.source_path();
     let source_root = normalize_path(&source_path.canonicalize().map_err(|e| EnstowError::Io {
         path: source_path.to_path_buf(),
         source: e,
     })?);
 
-    let pkg_roots = if args.packages.is_empty() {
+    let pairs: Vec<(PathBuf, PathBuf)> = if args.packages.is_empty() {
         if args.ignore.iter().any(|p| p == "*") {
             Vec::new()
         } else {
-            vec![source_root.clone()]
+            vec![(source_root.clone(), args.target_path())]
         }
     } else {
-        let mut roots = Vec::new();
+        let mut entries = Vec::new();
         for pkg in &args.packages {
             let pkg_path = source_root.join(pkg);
             let canonical =
@@ -347,27 +427,49 @@ fn resolve_pkg_roots(args: &CommonArgs) -> Result<(PathBuf, Vec<PathBuf>), Ensto
                     path: pkg_path.clone(),
                     source: e,
                 })?);
-            roots.push(canonical);
+            entries.push((canonical, args.target_for_package(pkg)));
         }
-        roots
+        entries
     };
 
+    let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    let mut index_by_norm: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    for (pkg_root, pkg_target) in pairs {
+        let norm_target = normalize_path(&pkg_target);
+        if let Some(&idx) = index_by_norm.get(&norm_target) {
+            groups[idx].1.push(pkg_root);
+        } else {
+            let idx = groups.len();
+            index_by_norm.insert(norm_target, idx);
+            groups.push((pkg_target, vec![pkg_root]));
+        }
+    }
+
+    Ok((source_root, groups))
+}
+
+fn resolve_pkg_roots(args: &CommonArgs) -> Result<(PathBuf, Vec<PathBuf>), EnstowError> {
+    let (source_root, groups) = resolve_pkg_groups_by_target(args)?;
+    let pkg_roots = groups.into_iter().flat_map(|(_, roots)| roots).collect();
     Ok((source_root, pkg_roots))
 }
 
-/// Discover symlinks under `target_canonical` scoped to managed target subtrees with dynamic depth.
-/// Falls back to a bounded scan of `target_canonical` when no managed subtrees exist (e.g. empty or flat packages).
+/// Discover symlinks under `scope.target_canonical` scoped to managed target subtrees with dynamic depth.
+/// Falls back to a bounded scan of `scope.target_canonical` when no managed subtrees exist (e.g. empty or flat packages).
 pub(crate) fn scan_target_symlinks(
     args: &CommonArgs,
     active_actions: &[FileAction],
-    target_canonical: &Path,
+    scope: &TargetScanScope<'_>,
 ) -> Vec<PathBuf> {
+    let target_path = scope.target_path;
+    let target_canonical = scope.target_canonical;
+    let source_root = scope.source_root;
+    let scoped_pkg_roots = scope.scoped_pkg_roots;
     if !target_canonical.is_dir() {
         return Vec::new();
     }
 
-    let target_path = args.target_path();
-    let norm_target = normalize_path(&target_path);
+    let norm_target = normalize_path(target_path);
     let norm_target_canonical = normalize_path(target_canonical);
 
     let mut managed_subtrees: BTreeMap<PathBuf, usize> = BTreeMap::new();
@@ -377,7 +479,7 @@ pub(crate) fn scan_target_symlinks(
         let target = action.target();
         let norm_t = normalize_path(target);
         let rel = target
-            .strip_prefix(&target_path)
+            .strip_prefix(target_path)
             .map(Path::to_path_buf)
             .or_else(|_| target.strip_prefix(target_canonical).map(Path::to_path_buf))
             .or_else(|_| norm_t.strip_prefix(&norm_target).map(Path::to_path_buf))
@@ -415,31 +517,29 @@ pub(crate) fn scan_target_symlinks(
         }
     }
 
-    // Include non-ignored top-level directories still present in package roots so packages
-    // whose files under a managed dir (e.g. `.gemini/`) were all deleted or ignored still get scanned.
-    if let Ok((source_root, pkg_roots)) = resolve_pkg_roots(args) {
-        for pkg_root in pkg_roots {
-            let gitignore = build_gitignore(&pkg_root, &source_root, &args.ignore);
-            let Ok(entries) = std::fs::read_dir(&pkg_root) else {
+    // Include non-ignored top-level directories still present in package roots targeting this root
+    // so packages whose files under a managed dir (e.g. `.gemini/`) were all deleted or ignored still get scanned.
+    for pkg_root in scoped_pkg_roots {
+        let gitignore = build_gitignore(pkg_root, source_root, &args.ignore);
+        let Ok(entries) = std::fs::read_dir(pkg_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
                 continue;
             };
-            for entry in entries.flatten() {
-                let Ok(ft) = entry.file_type() else {
-                    continue;
-                };
-                if !ft.is_dir() {
-                    continue;
-                }
-                if gitignore
-                    .matched_path_or_any_parents(entry.path(), true)
-                    .is_ignore()
-                {
-                    continue;
-                }
-                let top_dir = target_canonical.join(entry.file_name());
-                managed_subtrees.entry(top_dir.clone()).or_insert(0);
-                managed_ancestors.insert(normalize_path(&top_dir));
+            if !ft.is_dir() {
+                continue;
             }
+            if gitignore
+                .matched_path_or_any_parents(entry.path(), true)
+                .is_ignore()
+            {
+                continue;
+            }
+            let top_dir = target_canonical.join(entry.file_name());
+            managed_subtrees.entry(top_dir.clone()).or_insert(0);
+            managed_ancestors.insert(normalize_path(&top_dir));
         }
     }
 
@@ -532,6 +632,7 @@ pub(crate) fn scan_target_symlinks(
 pub(crate) fn plan_prune_from_symlinks(
     args: &CommonArgs,
     active_actions: &[FileAction],
+    target_path: &Path,
     target_canonical: &Path,
     symlinks: &[PathBuf],
 ) -> Result<Vec<FileAction>, EnstowError> {
@@ -540,7 +641,6 @@ pub(crate) fn plan_prune_from_symlinks(
         return Ok(Vec::new());
     }
 
-    let target_path = args.target_path();
     let mut stale_actions = Vec::new();
 
     for symlink_path in symlinks {
@@ -623,22 +723,52 @@ pub(crate) fn plan_prune_from_symlinks(
 /// Plan removal of stale symlinks belonging to managed packages that are no longer active dotfiles.
 pub fn plan_prune(args: &CommonArgs) -> Result<Vec<FileAction>, EnstowError> {
     let active_actions = plan_stow(args)?;
-    let (_source_root, pkg_roots) = resolve_pkg_roots(args)?;
-    if pkg_roots.is_empty() {
+    let (source_root, target_groups) = resolve_pkg_groups_by_target(args)?;
+    if target_groups.is_empty() {
         return Ok(Vec::new());
     }
 
-    let target_path = args.target_path();
-    let target_canonical = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.clone());
+    let mut stale_actions = Vec::new();
+    let mut seen_targets = HashSet::new();
 
-    if !target_canonical.is_dir() {
-        return Ok(Vec::new());
+    for (target_path, scoped_pkg_roots) in target_groups {
+        let target_canonical = target_path
+            .canonicalize()
+            .unwrap_or_else(|_| target_path.clone());
+
+        if !target_canonical.is_dir() {
+            continue;
+        }
+
+        let scope = TargetScanScope {
+            source_root: &source_root,
+            target_path: &target_path,
+            target_canonical: &target_canonical,
+            scoped_pkg_roots: &scoped_pkg_roots,
+        };
+        let symlinks = scan_target_symlinks(args, &active_actions, &scope);
+        let group_stale = plan_prune_from_symlinks(
+            args,
+            &active_actions,
+            &target_path,
+            &target_canonical,
+            &symlinks,
+        )?;
+        for action in group_stale {
+            let norm_t = normalize_path(action.target());
+            let canon_t = action
+                .target()
+                .canonicalize()
+                .ok()
+                .map(|c| normalize_path(&c));
+            let key = canon_t.unwrap_or(norm_t);
+            if seen_targets.insert(key) {
+                stale_actions.push(action);
+            }
+        }
     }
 
-    let symlinks = scan_target_symlinks(args, &active_actions, &target_canonical);
-    plan_prune_from_symlinks(args, &active_actions, &target_canonical, &symlinks)
+    Ok(stale_actions)
 }
 
 pub(crate) fn is_stale_scan_ignored_dir(name: &str) -> bool {
@@ -813,12 +943,8 @@ pub fn execute_plan_interactive(
     adopt: bool,
     interactive: bool,
 ) -> Result<(), EnstowError> {
-    use std::io::IsTerminal;
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let mut writer = std::io::stderr();
-    let colorize = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
-    execute_plan_interactive_with_io(
+    let roots: Vec<PathBuf> = target_root.into_iter().map(Path::to_path_buf).collect();
+    execute_plan_interactive_with_target_roots(
         actions,
         dry_run,
         age_key_file,
@@ -826,7 +952,41 @@ pub fn execute_plan_interactive(
         force,
         backup,
         backup_dir,
-        target_root,
+        &roots,
+        permissions,
+        adopt,
+        interactive,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_plan_interactive_with_target_roots(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+    recipients: &[String],
+    force: bool,
+    backup: bool,
+    backup_dir: Option<&Path>,
+    target_roots: &[PathBuf],
+    permissions: Option<&crate::config::PermissionsConfig>,
+    adopt: bool,
+    interactive: bool,
+) -> Result<(), EnstowError> {
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let mut writer = std::io::stderr();
+    let colorize = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
+    execute_plan_interactive_with_io_and_target_roots(
+        actions,
+        dry_run,
+        age_key_file,
+        recipients,
+        force,
+        backup,
+        backup_dir,
+        target_roots,
         permissions,
         adopt,
         interactive,
@@ -884,6 +1044,42 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
     writer: &mut W,
     colorize: bool,
 ) -> Result<(), EnstowError> {
+    let roots: Vec<PathBuf> = target_root.into_iter().map(Path::to_path_buf).collect();
+    execute_plan_interactive_with_io_and_target_roots(
+        actions,
+        dry_run,
+        age_key_file,
+        recipients,
+        force,
+        backup,
+        backup_dir,
+        &roots,
+        permissions,
+        adopt,
+        interactive,
+        reader,
+        writer,
+        colorize,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_plan_interactive_with_io_and_target_roots<R: std::io::BufRead, W: std::io::Write>(
+    actions: &[FileAction],
+    dry_run: bool,
+    age_key_file: Option<&Path>,
+    recipients: &[String],
+    force: bool,
+    backup: bool,
+    backup_dir: Option<&Path>,
+    target_roots: &[PathBuf],
+    permissions: Option<&crate::config::PermissionsConfig>,
+    adopt: bool,
+    interactive: bool,
+    reader: &mut R,
+    writer: &mut W,
+    colorize: bool,
+) -> Result<(), EnstowError> {
     let mut unfolded_dry_run = std::collections::HashSet::new();
     let resolved_backup_dir = if backup {
         backup_dir.map(|bd| {
@@ -896,12 +1092,14 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
 
     let result: Result<(), EnstowError> = (|| {
         for action in actions {
+            let action_target_root = best_target_root_for(action.target(), target_roots);
+            let backup_target_root = broadest_target_root_for(action.target(), target_roots);
             match action {
                 FileAction::Symlink { source, target } => {
                     let had_folded = unfold_folded_ancestors(
                         source,
                         target,
-                        target_root,
+                        action_target_root,
                         dry_run,
                         &mut unfolded_dry_run,
                     )?;
@@ -918,7 +1116,7 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                         continue;
                     }
 
-                    ensure_target_not_inside_source(source, target, target_root)?;
+                    ensure_target_not_inside_source(source, target, action_target_root)?;
 
                     let mut file_force = force;
                     let mut file_adopt = adopt;
@@ -980,7 +1178,7 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
 
                         let backup_dest = resolved_backup_dir
                             .as_deref()
-                            .map(|bd| compute_backup_dest(target, bd, target_root));
+                            .map(|bd| compute_backup_dest(target, bd, backup_target_root));
 
                         if dry_run {
                             if backup {
@@ -1020,13 +1218,14 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                     create_symlink(source, target, file_force)?;
                 }
                 FileAction::Decrypt { source, target } => {
+                    let perm_roots = permission_roots_for(target, target_roots);
                     let mode = permissions
-                        .map(|p| p.resolve_mode(target, Some(source), target_root))
+                        .map(|p| p.resolve_mode_for_roots(target, Some(source), &perm_roots))
                         .unwrap_or(0o600);
                     let had_folded = unfold_folded_ancestors(
                         source,
                         target,
-                        target_root,
+                        action_target_root,
                         dry_run,
                         &mut unfolded_dry_run,
                     )?;
@@ -1040,7 +1239,7 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
                         continue;
                     }
 
-                    ensure_target_not_inside_source(source, target, target_root)?;
+                    ensure_target_not_inside_source(source, target, action_target_root)?;
 
                     let mut file_force = force;
                     let mut file_adopt = adopt;
@@ -1131,7 +1330,7 @@ pub fn execute_plan_interactive_with_io<R: std::io::BufRead, W: std::io::Write>(
 
                         let backup_dest = resolved_backup_dir
                             .as_deref()
-                            .map(|bd| compute_backup_dest(target, bd, target_root));
+                            .map(|bd| compute_backup_dest(target, bd, backup_target_root));
 
                         if dry_run {
                             if backup {
@@ -1293,9 +1492,22 @@ pub fn execute_unstow_plan_with_shred(
     dry_run: bool,
     shred: bool,
 ) -> Result<(), EnstowError> {
-    let target_canonical = target_root
-        .canonicalize()
-        .unwrap_or_else(|_| target_root.to_path_buf());
+    execute_unstow_plan_with_roots(actions, &[target_root.to_path_buf()], dry_run, shred)
+}
+
+pub fn execute_unstow_plan_with_roots(
+    actions: &[FileAction],
+    target_roots: &[PathBuf],
+    dry_run: bool,
+    shred: bool,
+) -> Result<(), EnstowError> {
+    let mut stop_roots = HashSet::new();
+    for root in target_roots {
+        stop_roots.insert(normalize_path(root));
+        if let Ok(canon) = root.canonicalize() {
+            stop_roots.insert(normalize_path(&canon));
+        }
+    }
     for action in actions {
         match action {
             FileAction::Symlink { source, target } => {
@@ -1305,12 +1517,13 @@ pub fn execute_unstow_plan_with_shred(
                     } else {
                         info!("Unlinking {}", target.display());
                         unlink_symlink(target)?;
-                        clean_empty_parents(target, &target_canonical);
+                        clean_empty_parents_until(target, &stop_roots);
                     }
                 }
             }
             FileAction::Decrypt { source, target } => {
-                if find_folded_ancestor(source, target, Some(target_root)).is_some() {
+                let action_root = best_target_root_for(target, target_roots);
+                if find_folded_ancestor(source, target, action_root).is_some() {
                     continue;
                 }
                 if target.exists() || std::fs::symlink_metadata(target).is_ok() {
@@ -1331,7 +1544,7 @@ pub fn execute_unstow_plan_with_shred(
                                 source: e,
                             })?;
                         }
-                        clean_empty_parents(target, &target_canonical);
+                        clean_empty_parents_until(target, &stop_roots);
                     }
                 }
             }
@@ -1340,15 +1553,14 @@ pub fn execute_unstow_plan_with_shred(
     Ok(())
 }
 
-fn clean_empty_parents(path: &Path, stop_at: &Path) {
-    let norm_stop = normalize_path(stop_at);
+fn clean_empty_parents_until(path: &Path, stop_roots: &HashSet<PathBuf>) {
     let mut current = path.parent();
     while let Some(dir) = current {
-        if normalize_path(dir) == norm_stop {
+        if stop_roots.contains(&normalize_path(dir)) {
             break;
         }
         if let Ok(c) = dir.canonicalize() {
-            if normalize_path(&c) == norm_stop {
+            if stop_roots.contains(&normalize_path(&c)) {
                 break;
             }
         }
@@ -1940,6 +2152,26 @@ pub fn resolve_secret_target(
     target_root: &Path,
     packages: &[String],
 ) -> Result<PathBuf, EnstowError> {
+    let empty = BTreeMap::new();
+    let (_, target_path) = resolve_secret_target_with_package_targets(
+        file,
+        source_root,
+        target_root,
+        packages,
+        &empty,
+    )?;
+    Ok(target_path)
+}
+
+/// Resolve both the effective target root and deployed target path for an encrypted source file,
+/// honoring per-package `target` overrides when present.
+pub fn resolve_secret_target_with_package_targets(
+    file: &Path,
+    source_root: &Path,
+    target_root: &Path,
+    packages: &[String],
+    package_targets: &BTreeMap<String, PathBuf>,
+) -> Result<(PathBuf, PathBuf), EnstowError> {
     let canon_file = normalize_path(&file.canonicalize().map_err(|e| EnstowError::Io {
         path: file.to_path_buf(),
         source: e,
@@ -1956,23 +2188,36 @@ pub fn resolve_secret_target(
         ))
     })?;
 
-    let rel_path = if packages.is_empty() {
-        canon_file
-            .strip_prefix(&canon_source)
-            .ok()
-            .map(Path::to_path_buf)
+    let resolved = if packages.is_empty() {
+        canon_file.strip_prefix(&canon_source).ok().map(|rel| {
+            if let Some(std::path::Component::Normal(first)) = rel.components().next() {
+                if let Some(first_str) = first.to_str() {
+                    if let Some(pkg_target) = package_targets.get(first_str) {
+                        if let Ok(sub_rel) = rel.strip_prefix(first_str) {
+                            if !sub_rel.as_os_str().is_empty() {
+                                return (pkg_target.clone(), sub_rel.to_path_buf());
+                            }
+                        }
+                    }
+                }
+            }
+            (target_root.to_path_buf(), rel.to_path_buf())
+        })
     } else {
         packages.iter().find_map(|pkg| {
             let pkg_root = canon_source.join(pkg);
             let canon_pkg = normalize_path(&pkg_root.canonicalize().unwrap_or(pkg_root));
-            canon_file
-                .strip_prefix(&canon_pkg)
-                .ok()
-                .map(Path::to_path_buf)
+            canon_file.strip_prefix(&canon_pkg).ok().map(|rel| {
+                let effective_root = package_targets
+                    .get(pkg)
+                    .cloned()
+                    .unwrap_or_else(|| target_root.to_path_buf());
+                (effective_root, rel.to_path_buf())
+            })
         })
     };
 
-    let rel = rel_path.ok_or_else(|| {
+    let (effective_root, rel) = resolved.ok_or_else(|| {
         EnstowError::Config(format!(
             "Cannot resolve target path for '--apply': '{}' is not inside source directory '{}' (packages: {:?})",
             file.display(),
@@ -1981,7 +2226,8 @@ pub fn resolve_secret_target(
         ))
     })?;
 
-    Ok(target_root.join(rel.with_file_name(plain_name)))
+    let target_path = effective_root.join(rel.with_file_name(plain_name));
+    Ok((effective_root, target_path))
 }
 
 /// Securely deploy updated plaintext for an edited secret to its resolved target path,
@@ -2017,7 +2263,12 @@ pub fn add_file(
     dry_run: bool,
 ) -> Result<(PathBuf, PathBuf), EnstowError> {
     let expanded_file = if let Ok(stripped) = file.strip_prefix("~") {
-        target.join(stripped)
+        let home_expanded = crate::config::expand_tilde(file);
+        if home_expanded.exists() {
+            home_expanded
+        } else {
+            target.join(stripped)
+        }
     } else {
         file.to_path_buf()
     };
@@ -2260,7 +2511,14 @@ mod tests {
 
         let active_actions = plan_stow(&args).unwrap();
         let target_canonical = target_dir.path().canonicalize().unwrap();
-        let scanned = scan_target_symlinks(&args, &active_actions, &target_canonical);
+        let (source_root, pkg_roots) = resolve_pkg_roots(&args).unwrap();
+        let scope = TargetScanScope {
+            source_root: &source_root,
+            target_path: target_dir.path(),
+            target_canonical: &target_canonical,
+            scoped_pkg_roots: &pkg_roots,
+        };
+        let scanned = scan_target_symlinks(&args, &active_actions, &scope);
         let norm_scanned: Vec<PathBuf> = scanned.iter().map(|p| normalize_path(p)).collect();
 
         let expected_stale = target_canonical
@@ -2402,7 +2660,8 @@ mod tests {
         std::fs::write(&file, "hi").unwrap();
 
         std::fs::remove_file(&file).unwrap();
-        clean_empty_parents(&file, dir.path());
+        let stop_roots = HashSet::from([normalize_path(dir.path())]);
+        clean_empty_parents_until(&file, &stop_roots);
 
         // c, b, a should be removed, while root dir remains
         assert!(!nested.exists());

@@ -72,6 +72,10 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
     [package.bat.hooks]
     post_apply = "bat cache --build"
 
+    [package.systemd]
+    os = "linux"
+    target = "~/.config/systemd/user"
+
     [package.macos-defaults]
     os = "macos"
 
@@ -137,6 +141,9 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
       bat:
         hooks:
           post_apply: "bat cache --build"
+      systemd:
+        os: linux
+        target: ~/.config/systemd/user
       macos-defaults:
         os: macos
       linux-desktop:
@@ -210,6 +217,10 @@ Settings resolve in strict hierarchical precedence order (highest to lowest):
           "hooks": {
             "post_apply": "bat cache --build"
           }
+        },
+        "systemd": {
+          "os": "linux",
+          "target": "~/.config/systemd/user"
         },
         "macos-defaults": {
           "os": "macos"
@@ -295,7 +306,7 @@ Contextual environment variables are passed to each hook:
 
 - `ENSTOW_PACKAGE`: Name of the package being deployed (empty for global hooks).
 - `ENSTOW_SOURCE`: Path to dotfile package source directory.
-- `ENSTOW_TARGET`: Target deployment root directory.
+- `ENSTOW_TARGET`: Target deployment root directory (for package-scoped hooks, reflects `[package.<name>] target` when configured).
 - `ENSTOW_HOOK_TYPE`: Type of hook (`pre_apply`, `post_apply`, `pre_unstow`, `post_unstow`).
 - `ENSTOW_DRY_RUN`: `true` or `false`.
 - `ENSTOW_FORCE`: `true` or `false`.
@@ -344,6 +355,24 @@ hostname = ["workstation", "laptop"]
 ```
 
 Non-matching packages are automatically skipped during `apply`, `restow`, `unstow`, `status`, `diff`, `doctor`, and `rekey`.
+
+## :dart: Per-Package Target Directory
+
+Override the deployment target directory for individual packages so flat packages (such as `systemd/` or OS-specific app directories) can deploy without deeply nested folder hierarchies:
+
+```toml title="~/.config/enstow/config.toml"
+[package.systemd]
+os = "linux"
+target = "~/.config/systemd/user"
+
+[package.systemd.hooks]
+post_apply = "systemctl --user daemon-reload"
+post_unstow = "systemctl --user daemon-reload"
+```
+
+- **Path Expansion:** Leading `~` expands against `$HOME` (or `$USERPROFILE` on Windows). Relative paths (such as `target = ".config/systemd/user"`) resolve relative to the global `target` directory; absolute paths are used as-is.
+- **Precedence:** CLI `-t` / `--target` > `ENSTOW_TARGET` > `[package.<name>] target` > global config `target` > `$HOME`. Passing `-t` or setting `ENSTOW_TARGET` overrides all package targets (useful for staging or CI sandboxes).
+- **Command Coverage:** Applied consistently across `apply`, `restow`, `unstow`, `scrub`, `status`, `diff`, `doctor`, `add`, `edit --apply`, `init`, and package-scoped hook `ENSTOW_TARGET` environment variables.
 
 ## :lock: Custom Target Permissions
 

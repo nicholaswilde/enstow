@@ -36,18 +36,19 @@ fn run_apply(
 ) -> anyhow::Result<()> {
     let resolved = enstow::config::resolve_common_args(args, config)?;
     let common = resolved.to_common_args();
+    let target_roots = common.active_target_roots();
     if common.prune {
         let stale_actions = stow::plan_prune(&common)?;
-        stow::execute_unstow_plan_with_shred(
+        stow::execute_unstow_plan_with_roots(
             &stale_actions,
-            &common.target_path(),
+            &target_roots,
             common.dry_run,
             common.shred,
         )?;
     }
     let actions = stow::plan_stow(&common)?;
     enstow::hook::run_pre_apply_hooks(&resolved)?;
-    stow::execute_plan_interactive(
+    stow::execute_plan_interactive_with_target_roots(
         &actions,
         common.dry_run,
         common.age_key_file.as_deref(),
@@ -55,7 +56,7 @@ fn run_apply(
         common.force,
         common.backup,
         Some(&common.backup_dir_path()),
-        Some(&common.target_path()),
+        &target_roots,
         Some(&resolved.permissions),
         common.adopt,
         common.interactive,
@@ -113,10 +114,15 @@ fn main() -> anyhow::Result<()> {
             force,
             dry_run,
         }) => {
-            let resolved_source =
-                enstow::config::resolve_source(source.as_deref(), config.as_ref());
-            let resolved_target =
-                enstow::config::resolve_target(target.as_deref(), config.as_ref());
+            let resolved_source = enstow::config::resolve_source(
+                source.as_deref().or(cli.common.source.as_deref()),
+                config.as_ref(),
+            );
+            let resolved_target = enstow::config::resolve_target_for_package(
+                target.as_deref().or(cli.common.target.as_deref()),
+                config.as_ref(),
+                &package,
+            );
             let resolved_recipients =
                 enstow::config::resolve_recipients(&recipient, config.as_ref());
             let resolved_key_file =
@@ -160,11 +166,12 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Restow(args)) => {
             let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
             let common = resolved.to_common_args();
+            let target_roots = common.active_target_roots();
             enstow::hook::run_pre_unstow_hooks(&resolved)?;
             let unstow_actions = stow::plan_unstow(&common)?;
-            stow::execute_unstow_plan_with_shred(
+            stow::execute_unstow_plan_with_roots(
                 &unstow_actions,
-                &common.target_path(),
+                &target_roots,
                 common.dry_run,
                 common.shred,
             )?;
@@ -172,7 +179,7 @@ fn main() -> anyhow::Result<()> {
 
             enstow::hook::run_pre_apply_hooks(&resolved)?;
             let apply_actions = stow::plan_stow(&common)?;
-            stow::execute_plan_interactive(
+            stow::execute_plan_interactive_with_target_roots(
                 &apply_actions,
                 common.dry_run,
                 common.age_key_file.as_deref(),
@@ -180,7 +187,7 @@ fn main() -> anyhow::Result<()> {
                 common.force,
                 common.backup,
                 Some(&common.backup_dir_path()),
-                Some(&common.target_path()),
+                &target_roots,
                 Some(&resolved.permissions),
                 common.adopt,
                 common.interactive,
@@ -190,11 +197,12 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Unstow(args)) => {
             let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
             let common = resolved.to_common_args();
+            let target_roots = common.active_target_roots();
             enstow::hook::run_pre_unstow_hooks(&resolved)?;
             let actions = stow::plan_unstow(&common)?;
-            stow::execute_unstow_plan_with_shred(
+            stow::execute_unstow_plan_with_roots(
                 &actions,
-                &common.target_path(),
+                &target_roots,
                 common.dry_run,
                 common.shred,
             )?;
@@ -205,14 +213,10 @@ fn main() -> anyhow::Result<()> {
             let resolved = enstow::config::resolve_common_args(&args, config.as_ref())?;
             let mut common = resolved.to_common_args();
             common.shred = true;
+            let target_roots = common.active_target_roots();
             enstow::hook::run_pre_unstow_hooks(&resolved)?;
             let actions = stow::plan_unstow(&common)?;
-            stow::execute_unstow_plan_with_shred(
-                &actions,
-                &common.target_path(),
-                common.dry_run,
-                true,
-            )?;
+            stow::execute_unstow_plan_with_roots(&actions, &target_roots, common.dry_run, true)?;
             enstow::hook::run_post_unstow_hooks(&resolved)?;
         }
         Some(Commands::Status {
@@ -425,24 +429,29 @@ fn main() -> anyhow::Result<()> {
 
             // Validate target resolution before launching editor when --apply is set
             let apply_context = if apply {
+                let cli_target = target.as_deref().or(cli.common.target.as_deref());
                 let resolved_source = enstow::config::resolve_source(
                     source.as_deref().or(cli.common.source.as_deref()),
                     config.as_ref(),
                 );
-                let resolved_target = enstow::config::resolve_target(
-                    target.as_deref().or(cli.common.target.as_deref()),
+                let resolved_target = enstow::config::resolve_target(cli_target, config.as_ref());
+                let package_targets = enstow::config::resolve_package_targets(
+                    cli_target,
                     config.as_ref(),
+                    &resolved_target,
                 );
                 let resolved_packages =
                     enstow::config::resolve_packages(&[], None, config.as_ref())?;
                 let resolved_permissions = enstow::config::resolve_permissions(config.as_ref())?;
-                let target_path = stow::resolve_secret_target(
-                    &file,
-                    &resolved_source,
-                    &resolved_target,
-                    &resolved_packages,
-                )?;
-                Some((resolved_target, target_path, resolved_permissions))
+                let (effective_target_root, target_path) =
+                    stow::resolve_secret_target_with_package_targets(
+                        &file,
+                        &resolved_source,
+                        &resolved_target,
+                        &resolved_packages,
+                        &package_targets,
+                    )?;
+                Some((effective_target_root, target_path, resolved_permissions))
             } else {
                 None
             };

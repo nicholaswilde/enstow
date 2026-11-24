@@ -8,8 +8,9 @@ use crate::config::PermissionsConfig;
 use crate::crypto::{self, SecretType};
 use crate::error::EnstowError;
 use crate::stow::{
-    is_stale_scan_ignored_dir, normalize_path, plan_prune_from_symlinks, plan_stow,
-    scan_target_symlinks, FileAction,
+    best_target_root_for, is_stale_scan_ignored_dir, normalize_path, permission_roots_for,
+    plan_prune_from_symlinks, plan_stow, resolve_pkg_groups_by_target, scan_target_symlinks,
+    FileAction, TargetScanScope,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -75,11 +76,12 @@ pub fn run_doctor(
     let actions = plan_stow(args)?;
     let mut checks = Vec::new();
 
+    let target_roots = args.active_target_roots();
     checks.extend(check_package_collisions(&actions));
     checks.extend(check_symlink_health(args, &actions)?);
     checks.extend(check_secret_permissions(
         &actions,
-        &args.target_path(),
+        &target_roots,
         permissions,
     ));
     checks.extend(check_decryption_prerequisites(args, &actions));
@@ -334,76 +336,120 @@ fn check_package_collisions(actions: &[FileAction]) -> Vec<DoctorCheck> {
     checks
 }
 
+fn collect_dangling_symlink_checks(
+    target_path: &Path,
+    target_canonical: &Path,
+    scanned_symlinks: &[PathBuf],
+    reported_paths: &mut HashSet<PathBuf>,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let norm_tc = normalize_path(target_canonical);
+    for symlink_path in scanned_symlinks {
+        let Ok(dest) = fs::read_link(symlink_path) else {
+            continue;
+        };
+        let full_dest = if dest.is_relative() {
+            symlink_path.parent().map(|p| p.join(&dest)).unwrap_or(dest)
+        } else {
+            dest
+        };
+        if full_dest.exists() {
+            continue;
+        }
+        let norm_sp = normalize_path(symlink_path);
+        let rebased = symlink_path
+            .strip_prefix(target_canonical)
+            .or_else(|_| norm_sp.strip_prefix(&norm_tc))
+            .map(|rel| target_path.join(rel))
+            .unwrap_or_else(|_| symlink_path.clone());
+        let norm_rebased = normalize_path(&rebased);
+        if reported_paths.contains(&norm_sp) || reported_paths.contains(&norm_rebased) {
+            continue;
+        }
+        reported_paths.insert(symlink_path.clone());
+        reported_paths.insert(norm_sp);
+        reported_paths.insert(rebased.clone());
+        reported_paths.insert(norm_rebased);
+        checks.push(DoctorCheck {
+            category: "symlink_health".into(),
+            severity: CheckSeverity::Error,
+            message: format!(
+                "Dangling symlink pointing to nonexistent path: {} -> {}",
+                symlink_path.display(),
+                full_dest.display()
+            ),
+            path: Some(symlink_path.clone()),
+        });
+    }
+}
+
 fn check_symlink_health(
     args: &CommonArgs,
     actions: &[FileAction],
 ) -> Result<Vec<DoctorCheck>, EnstowError> {
     let mut checks = Vec::new();
-    let target_path = args.target_path();
+    let (source_root, target_groups) = resolve_pkg_groups_by_target(args)?;
+    let target_roots: Vec<PathBuf> = if target_groups.is_empty() {
+        args.active_target_roots()
+    } else {
+        target_groups.iter().map(|(t, _)| t.clone()).collect()
+    };
 
-    if !target_path.exists() {
+    let existing_groups: Vec<(PathBuf, Vec<PathBuf>)> = target_groups
+        .into_iter()
+        .filter(|(t, _)| t.exists())
+        .collect();
+
+    if existing_groups.is_empty() {
+        let missing_target = target_roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| args.target_path());
         checks.push(DoctorCheck {
             category: "symlink_health".into(),
             severity: CheckSeverity::Ok,
             message: format!(
                 "Target destination directory does not exist yet: {}",
-                target_path.display()
+                missing_target.display()
             ),
-            path: Some(target_path),
+            path: Some(missing_target),
         });
         return Ok(checks);
     }
 
-    let target_canonical = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.clone());
-
     let mut reported_paths = HashSet::new();
-    let scanned_symlinks = scan_target_symlinks(args, actions, &target_canonical);
+    let mut scanned_by_target: Vec<(&PathBuf, PathBuf, Vec<PathBuf>)> = Vec::new();
 
-    // 1. Scan managed target subtrees for dangling symlinks
-    for symlink_path in &scanned_symlinks {
-        if let Ok(dest) = fs::read_link(symlink_path) {
-            let full_dest = if dest.is_relative() {
-                match symlink_path.parent() {
-                    Some(parent) => parent.join(&dest),
-                    None => dest,
-                }
-            } else {
-                dest
-            };
+    for (target_path, scoped_pkg_roots) in &existing_groups {
+        let target_canonical = target_path
+            .canonicalize()
+            .unwrap_or_else(|_| target_path.clone());
 
-            // Check if destination exists
-            if !full_dest.exists() {
-                let norm_sp = normalize_path(symlink_path);
-                let norm_tc = normalize_path(&target_canonical);
-                let rebased = symlink_path
-                    .strip_prefix(&target_canonical)
-                    .or_else(|_| norm_sp.strip_prefix(&norm_tc))
-                    .map(|rel| target_path.join(rel))
-                    .unwrap_or_else(|_| symlink_path.clone());
-                reported_paths.insert(symlink_path.clone());
-                reported_paths.insert(norm_sp);
-                reported_paths.insert(rebased.clone());
-                reported_paths.insert(normalize_path(&rebased));
-                checks.push(DoctorCheck {
-                    category: "symlink_health".into(),
-                    severity: CheckSeverity::Error,
-                    message: format!(
-                        "Dangling symlink pointing to nonexistent path: {} -> {}",
-                        symlink_path.display(),
-                        full_dest.display()
-                    ),
-                    path: Some(symlink_path.clone()),
-                });
-            }
-        }
+        let scope = TargetScanScope {
+            source_root: &source_root,
+            target_path,
+            target_canonical: &target_canonical,
+            scoped_pkg_roots,
+        };
+        let scanned_symlinks = scan_target_symlinks(args, actions, &scope);
+
+        // 1. Scan managed target subtrees for dangling symlinks
+        collect_dangling_symlink_checks(
+            target_path,
+            &target_canonical,
+            &scanned_symlinks,
+            &mut reported_paths,
+            &mut checks,
+        );
+
+        scanned_by_target.push((target_path, target_canonical, scanned_symlinks));
     }
 
     // 2. Detect legacy GNU Stow folded directory symlinks pointing into source packages
     for action in actions {
+        let action_target_root = best_target_root_for(action.target(), &target_roots);
         if let Some((folded_path, resolved_dest)) =
-            crate::stow::find_folded_ancestor(action.source(), action.target(), Some(&target_path))
+            crate::stow::find_folded_ancestor(action.source(), action.target(), action_target_root)
         {
             let norm_folded = normalize_path(&folded_path);
             if reported_paths.insert(norm_folded) {
@@ -423,30 +469,36 @@ fn check_symlink_health(
     }
 
     // 3. Scan for stale symlinks belonging to managed dotfiles no longer active
-    if let Ok(stale_actions) =
-        plan_prune_from_symlinks(args, actions, &target_canonical, &scanned_symlinks)
-    {
-        for stale in stale_actions {
-            let target = stale.target().to_path_buf();
-            let norm_target = normalize_path(&target);
-            if !reported_paths.contains(&target) && !reported_paths.contains(&norm_target) {
-                reported_paths.insert(target.clone());
-                reported_paths.insert(norm_target);
-                checks.push(DoctorCheck {
-                    category: "symlink_health".into(),
-                    severity: CheckSeverity::Warning,
-                    message: format!(
-                        "Stale symlink from previous package: {} -> {}",
-                        stale.target().display(),
-                        stale.source().display()
-                    ),
-                    path: Some(target),
-                });
+    for (target_path, target_canonical, scanned_symlinks) in &scanned_by_target {
+        if let Ok(stale_actions) = plan_prune_from_symlinks(
+            args,
+            actions,
+            target_path,
+            target_canonical,
+            scanned_symlinks,
+        ) {
+            for stale in stale_actions {
+                let target = stale.target().to_path_buf();
+                let norm_target = normalize_path(&target);
+                if !reported_paths.contains(&target) && !reported_paths.contains(&norm_target) {
+                    reported_paths.insert(target.clone());
+                    reported_paths.insert(norm_target);
+                    checks.push(DoctorCheck {
+                        category: "symlink_health".into(),
+                        severity: CheckSeverity::Warning,
+                        message: format!(
+                            "Stale symlink from previous package: {} -> {}",
+                            stale.target().display(),
+                            stale.source().display()
+                        ),
+                        path: Some(target),
+                    });
+                }
             }
         }
     }
 
-    // 3. Verify active symlink actions
+    // 4. Verify active symlink actions
     let symlink_actions_count = actions
         .iter()
         .filter(|a| matches!(a, FileAction::Symlink { .. }))
@@ -469,7 +521,7 @@ fn check_symlink_health(
 
 fn check_secret_permissions(
     actions: &[FileAction],
-    target_root: &Path,
+    target_roots: &[PathBuf],
     permissions: Option<&PermissionsConfig>,
 ) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
@@ -498,8 +550,9 @@ fn check_secret_permissions(
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = fs::symlink_metadata(target) {
                     let actual_mode = meta.permissions().mode() & 0o777;
+                    let perm_roots = permission_roots_for(target, target_roots);
                     let expected_mode = permissions
-                        .map(|p| p.resolve_mode(target, Some(source), Some(target_root)))
+                        .map(|p| p.resolve_mode_for_roots(target, Some(source), &perm_roots))
                         .unwrap_or(0o600);
 
                     if actual_mode != expected_mode {
@@ -531,7 +584,7 @@ fn check_secret_permissions(
 
             #[cfg(not(unix))]
             {
-                let _ = (source, permissions, target_root);
+                let _ = (source, permissions, target_roots);
                 checks.push(DoctorCheck {
                     category: "secret_permissions".into(),
                     severity: CheckSeverity::Ok,

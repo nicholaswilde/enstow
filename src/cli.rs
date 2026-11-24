@@ -1,5 +1,6 @@
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::env::EnvCompleter;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -107,6 +108,10 @@ pub struct CommonArgs {
     /// Securely shred decrypted secret files with zeros before unlinking
     #[arg(long, env = "ENSTOW_SHRED")]
     pub shred: bool,
+
+    /// Per-package target directory overrides resolved from `[package.<name>] target`
+    #[arg(skip)]
+    pub package_targets: BTreeMap<String, PathBuf>,
 }
 
 impl CommonArgs {
@@ -116,6 +121,35 @@ impl CommonArgs {
 
     pub fn target_path(&self) -> PathBuf {
         self.target.clone().unwrap_or_else(default_target_dir)
+    }
+
+    /// Resolve the effective target directory for a specific package, falling back to global target.
+    pub fn target_for_package(&self, pkg: &str) -> PathBuf {
+        self.package_targets
+            .get(pkg)
+            .cloned()
+            .unwrap_or_else(|| self.target_path())
+    }
+
+    /// Return deduplicated active target root directories for the currently selected packages.
+    pub fn active_target_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut push_unique = |path: PathBuf| {
+            let norm = crate::stow::normalize_path(&path);
+            if seen.insert(norm) {
+                roots.push(path);
+            }
+        };
+
+        if self.packages.is_empty() {
+            push_unique(self.target_path());
+        } else {
+            for pkg in &self.packages {
+                push_unique(self.target_for_package(pkg));
+            }
+        }
+        roots
     }
 
     pub fn backup_dir_path(&self) -> PathBuf {

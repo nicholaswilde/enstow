@@ -15,8 +15,8 @@ use crate::doctor::{run_doctor, CheckSeverity, DoctorReport};
 use crate::error::EnstowError;
 use crate::hook::{run_post_apply_hooks, run_pre_apply_hooks};
 use crate::stow::{
-    execute_plan_interactive_with_io, execute_unstow_plan_with_shred, normalize_path, plan_prune,
-    plan_stow, FileAction,
+    execute_plan_interactive_with_io_and_target_roots, execute_unstow_plan_with_roots,
+    normalize_path, plan_prune, plan_stow, FileAction,
 };
 
 /// Summary report returned after executing `enstow init`.
@@ -362,14 +362,10 @@ pub fn run_init_with_io<R: BufRead, W: Write>(
         )));
     }
 
-    if common.prune && common.target_path().exists() {
+    let target_roots = common.active_target_roots();
+    if common.prune && target_roots.iter().any(|t| t.exists()) {
         let stale = plan_prune(&common)?;
-        execute_unstow_plan_with_shred(
-            &stale,
-            &common.target_path(),
-            common.dry_run,
-            common.shred,
-        )?;
+        execute_unstow_plan_with_roots(&stale, &target_roots, common.dry_run, common.shred)?;
     }
 
     let mut actions = plan_stow(&common)?;
@@ -380,7 +376,7 @@ pub fn run_init_with_io<R: BufRead, W: Write>(
     if !common.dry_run {
         run_pre_apply_hooks(&resolved)?;
     }
-    execute_plan_interactive_with_io(
+    execute_plan_interactive_with_io_and_target_roots(
         &actions,
         common.dry_run,
         common.age_key_file.as_deref(),
@@ -388,7 +384,7 @@ pub fn run_init_with_io<R: BufRead, W: Write>(
         common.force,
         common.backup,
         Some(&common.backup_dir_path()),
-        Some(&common.target_path()),
+        &target_roots,
         Some(&resolved.permissions),
         common.adopt,
         common.interactive,

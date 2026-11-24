@@ -87,3 +87,13 @@
 # Per-package lifecycle hooks
 # [package.bat.hooks]
 # post_apply = "bat cache --build"
+
+# Per-package target directory override (supports ~ expansion and paths relative to global target)
+# Precedence: CLI --target > ENSTOW_TARGET > [package.<name>] target > global target > $HOME
+# [package.systemd]
+# os = "linux"
+# target = "~/.config/systemd/user"
+#
+# [package.systemd.hooks]
+# post_apply = "systemctl --user daemon-reload"
+# post_unstow = "systemctl --user daemon-reload"

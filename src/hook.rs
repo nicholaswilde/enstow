@@ -138,7 +138,7 @@ pub fn run_pre_apply_hooks(args: &ResolvedCommonArgs) -> Result<(), EnstowError>
                 hook_type: HookType::PreApply,
                 package: Some(pkg),
                 source: &pkg_source,
-                target: &args.target,
+                target: args.target_for_package(pkg),
                 dry_run: args.dry_run,
                 force: args.force,
             };
@@ -162,7 +162,7 @@ pub fn run_post_apply_hooks(args: &ResolvedCommonArgs) -> Result<(), EnstowError
                 hook_type: HookType::PostApply,
                 package: Some(pkg),
                 source: &pkg_source,
-                target: &args.target,
+                target: args.target_for_package(pkg),
                 dry_run: args.dry_run,
                 force: args.force,
             };
@@ -208,7 +208,7 @@ pub fn run_pre_unstow_hooks(args: &ResolvedCommonArgs) -> Result<(), EnstowError
                 hook_type: HookType::PreUnstow,
                 package: Some(pkg),
                 source: &pkg_source,
-                target: &args.target,
+                target: args.target_for_package(pkg),
                 dry_run: args.dry_run,
                 force: args.force,
             };
@@ -232,7 +232,7 @@ pub fn run_post_unstow_hooks(args: &ResolvedCommonArgs) -> Result<(), EnstowErro
                 hook_type: HookType::PostUnstow,
                 package: Some(pkg),
                 source: &pkg_source,
-                target: &args.target,
+                target: args.target_for_package(pkg),
                 dry_run: args.dry_run,
                 force: args.force,
             };
@@ -407,6 +407,7 @@ mod tests {
         ResolvedCommonArgs {
             source: PathBuf::from("/tmp/source"),
             target: PathBuf::from("/tmp/target"),
+            package_targets: BTreeMap::new(),
             dry_run,
             force: false,
             prune: false,

@@ -178,6 +178,8 @@ fn matches_hostname_filter(filter: &str, host_name: &str) -> bool {
 /// Configuration for a specific dotfile package.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PackageConfig {
+    #[serde(default)]
+    pub target: Option<PathBuf>,
     #[serde(default, deserialize_with = "deserialize_hook_commands")]
     pub os: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_hook_commands")]
@@ -570,6 +572,18 @@ impl PermissionsConfig {
         source: Option<&Path>,
         target_root: Option<&Path>,
     ) -> u32 {
+        match target_root {
+            Some(root) => self.resolve_mode_for_roots(target, source, &[root]),
+            None => self.resolve_mode_for_roots(target, source, &[]),
+        }
+    }
+
+    pub fn resolve_mode_for_roots(
+        &self,
+        target: &Path,
+        source: Option<&Path>,
+        target_roots: &[&Path],
+    ) -> u32 {
         for (pattern, mode, package) in &self.rules {
             if let Some(pkg) = package {
                 let matches_pkg = source
@@ -588,8 +602,15 @@ impl PermissionsConfig {
                 if matcher.is_match(target) {
                     return *mode;
                 }
-                if let Some(root) = target_root {
+                for root in target_roots {
                     if let Ok(rel) = target.strip_prefix(root) {
+                        if matcher.is_match(rel) {
+                            return *mode;
+                        }
+                    }
+                    let norm_t = crate::stow::normalize_path(target);
+                    let norm_r = crate::stow::normalize_path(root);
+                    if let Ok(rel) = norm_t.strip_prefix(&norm_r) {
                         if matcher.is_match(rel) {
                             return *mode;
                         }
@@ -644,6 +665,7 @@ pub fn resolve_hooks(config: Option<&ConfigFile>) -> ResolvedHooks {
 pub struct ResolvedCommonArgs {
     pub source: PathBuf,
     pub target: PathBuf,
+    pub package_targets: BTreeMap<String, PathBuf>,
     pub dry_run: bool,
     pub force: bool,
     pub prune: bool,
@@ -663,6 +685,14 @@ pub struct ResolvedCommonArgs {
 }
 
 impl ResolvedCommonArgs {
+    /// Return the resolved target directory for `pkg`, falling back to global `target`.
+    pub fn target_for_package(&self, pkg: &str) -> &Path {
+        self.package_targets
+            .get(pkg)
+            .map(PathBuf::as_path)
+            .unwrap_or(&self.target)
+    }
+
     pub fn to_common_args(&self) -> CommonArgs {
         CommonArgs {
             source: Some(self.source.clone()),
@@ -680,6 +710,7 @@ impl ResolvedCommonArgs {
             interactive: self.interactive,
             no_hooks: self.no_hooks,
             shred: self.shred,
+            package_targets: self.package_targets.clone(),
         }
     }
 }
@@ -859,10 +890,19 @@ pub fn resolve_profile(cli_profile: Option<&str>, config: Option<&ConfigFile>) -
         })
 }
 
-fn expand_tilde(path: &Path) -> PathBuf {
+/// Expand a leading `~` segment against `$HOME` (or `$USERPROFILE` on Windows).
+pub fn expand_tilde(path: &Path) -> PathBuf {
     if let Ok(stripped) = path.strip_prefix("~") {
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            return PathBuf::from(home).join(stripped);
+        if let Some(home) = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
+        {
+            let base = PathBuf::from(home);
+            return if stripped.as_os_str().is_empty() {
+                base
+            } else {
+                base.join(stripped)
+            };
         }
     }
     path.to_path_buf()
@@ -1111,7 +1151,7 @@ pub fn resolve_source(cli_source: Option<&Path>, config: Option<&ConfigFile>) ->
 
 /// Resolve target directory precedence: CLI > ENSTOW_TARGET > Config > Default (HOME / ".")
 pub fn resolve_target(cli_target: Option<&Path>, config: Option<&ConfigFile>) -> PathBuf {
-    if let Some(t) = cli_target {
+    let raw = if let Some(t) = cli_target {
         t.to_path_buf()
     } else if let Ok(t_env) = std::env::var("ENSTOW_TARGET") {
         if !t_env.trim().is_empty() {
@@ -1125,7 +1165,78 @@ pub fn resolve_target(cli_target: Option<&Path>, config: Option<&ConfigFile>) ->
         t
     } else {
         default_target_dir()
+    };
+    expand_tilde(&raw)
+}
+
+fn resolve_package_target_path(path: &Path, base_target: &Path) -> PathBuf {
+    let expanded = expand_tilde(path);
+    if expanded.is_absolute()
+        || expanded.has_root()
+        || matches!(
+            expanded.components().next(),
+            Some(std::path::Component::Prefix(_))
+        )
+    {
+        return expanded;
     }
+    let mut joined = base_target.to_path_buf();
+    for comp in expanded.components() {
+        if !matches!(comp, std::path::Component::CurDir) {
+            joined.push(comp.as_os_str());
+        }
+    }
+    joined
+}
+
+/// Resolve per-package target overrides from `[package.<name>] target`.
+///
+/// Precedence: CLI `-t`/`--target` > `ENSTOW_TARGET` > `[package.<name>] target` > global config `target` > `$HOME`.
+/// Explicit CLI or `ENSTOW_TARGET` overrides take precedence over all per-package targets.
+pub fn resolve_package_targets(
+    cli_target: Option<&Path>,
+    config: Option<&ConfigFile>,
+    global_target: &Path,
+) -> BTreeMap<String, PathBuf> {
+    let mut resolved = BTreeMap::new();
+    if cli_target.is_some() {
+        return resolved;
+    }
+    if std::env::var("ENSTOW_TARGET")
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        return resolved;
+    }
+    if let Some(pkg_map) = config.and_then(|c| c.package.as_ref()) {
+        for (pkg_name, pkg_cfg) in pkg_map {
+            if let Some(raw_target) = pkg_cfg.target.as_deref() {
+                if !raw_target.to_string_lossy().trim().is_empty() {
+                    resolved.insert(
+                        pkg_name.clone(),
+                        resolve_package_target_path(raw_target, global_target),
+                    );
+                }
+            }
+        }
+    }
+    resolved
+}
+
+/// Resolve the effective target directory for a single package.
+///
+/// Precedence: CLI `-t`/`--target` > `ENSTOW_TARGET` > `[package.<name>] target` > global config `target` > `$HOME`.
+pub fn resolve_target_for_package(
+    cli_target: Option<&Path>,
+    config: Option<&ConfigFile>,
+    package: &str,
+) -> PathBuf {
+    let global_target = resolve_target(cli_target, config);
+    let package_targets = resolve_package_targets(cli_target, config, &global_target);
+    package_targets
+        .get(package)
+        .cloned()
+        .unwrap_or(global_target)
 }
 
 /// Resolve dry-run precedence: CLI (-n / --dry-run) > ENSTOW_DRY_RUN > Config > Default (false)
@@ -1147,8 +1258,9 @@ pub fn resolve_common_args(
     // 1. Source precedence: CLI > ENSTOW_SOURCE > Config > Default (".")
     let source = resolve_source(cli_args.source.as_deref(), config);
 
-    // 2. Target precedence: CLI > ENSTOW_TARGET > Config > Default (HOME / ".")
+    // 2. Target precedence: CLI > ENSTOW_TARGET > [package.<name>] target > Config > Default (HOME / ".")
     let target = resolve_target(cli_args.target.as_deref(), config);
+    let package_targets = resolve_package_targets(cli_args.target.as_deref(), config, &target);
 
     // 3. Age key file precedence: CLI > ENSTOW_AGE_KEY_FILE > SOPS_AGE_KEY_FILE > Config
     let age_key_file = resolve_age_key_file(cli_args.age_key_file.as_deref(), config);
@@ -1283,6 +1395,7 @@ pub fn resolve_common_args(
     Ok(ResolvedCommonArgs {
         source,
         target,
+        package_targets,
         dry_run,
         force,
         prune,
