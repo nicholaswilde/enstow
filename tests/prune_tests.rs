@@ -531,6 +531,7 @@ fn test_plan_prune_depth_6_when_package_becomes_empty() {
 
 #[test]
 fn test_default_no_subcommand_cli_honors_prune_flag_and_config() {
+    let _lock = ENV_MUTEX.lock().unwrap();
     let bin = env!("CARGO_BIN_EXE_enstow");
     match std::process::Command::new(bin).arg("--version").output() {
         Ok(o) if o.status.success() => {}
@@ -561,6 +562,10 @@ fn test_default_no_subcommand_cli_honors_prune_flag_and_config() {
 
     // 1. Initial stow using default no-subcommand invocation
     let init_out = std::process::Command::new(bin)
+        .env_remove("ENSTOW_PRUNE")
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_PACKAGES")
+        .env_remove("ENSTOW_PROFILE")
         .arg("--source")
         .arg(source_dir.path())
         .arg("--target")
@@ -597,6 +602,10 @@ fn test_default_no_subcommand_cli_honors_prune_flag_and_config() {
 
     // 2. Default no-subcommand with `--prune` removes depth-6 stale symlink
     let prune_out = std::process::Command::new(bin)
+        .env_remove("ENSTOW_PRUNE")
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_PACKAGES")
+        .env_remove("ENSTOW_PROFILE")
         .arg("--source")
         .arg(source_dir.path())
         .arg("--target")
@@ -628,6 +637,10 @@ fn test_default_no_subcommand_cli_honors_prune_flag_and_config() {
     .unwrap();
 
     let cfg_out = std::process::Command::new(bin)
+        .env_remove("ENSTOW_PRUNE")
+        .env_remove("ENSTOW_CONFIG")
+        .env_remove("ENSTOW_PACKAGES")
+        .env_remove("ENSTOW_PROFILE")
         .arg("--source")
         .arg(source_dir.path())
         .arg("--target")
